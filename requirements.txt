@@ -1,0 +1,8 @@
+# SingSmith MVP — core dependencies (all free, all pip-installable)
+fastapi
+uvicorn
+python-multipart
+numpy
+scipy
+soundfile
+imageio-ffmpeg

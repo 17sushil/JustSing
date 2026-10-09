@@ -1,0 +1,3 @@
+# Optional: enables lyrics transcription + language detection (any language).
+# If this fails to install or you set WHISPER=off, the app works fine without it.
+faster-whisper

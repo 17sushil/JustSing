@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SingSmith — Sing anything, get a finished song</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Outfit', sans-serif; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .glass { backdrop-filter: blur(16px); background: rgba(255,255,255,0.85); }
+  .glow { box-shadow: 0 0 40px rgba(168,85,247,0.20); }
+  .shimmer { background: linear-gradient(90deg, #a855f7 0%, #ec4899 50%, #a855f7 100%); background-size: 200% 100%; animation: shimmer 2s linear infinite; }
+  @keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+</style>
+</head>
+<body class="min-h-screen bg-[#fbf7ff] text-zinc-900 selection:bg-purple-200">
+  <header class="sticky top-0 z-50 border-b border-purple-100 glass">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-pink-500 flex items-center justify-center text-white font-bold text-lg">S</div>
+        <div>
+          <div class="font-bold text-[17px] leading-none">SingSmith</div>
+          <div class="text-[11px] tracking-widest uppercase text-zinc-500 mono">Zero-Cost MVP • v0.2 fixed</div>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="/api/health" target="_blank" class="text-xs mono px-3 py-1.5 rounded-full bg-zinc-900 text-white hover:bg-black">API health</a>
+        <a href="/test-upload" target="_blank" class="text-xs mono px-3 py-1.5 rounded-full bg-purple-100 text-purple-700 hover:bg-purple-200">Fallback upload</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Sandbox notice -->
+  <div id="sandboxNotice" class="max-w-6xl mx-auto px-6 pt-4">
+    <div class="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs leading-relaxed">
+      <b>Sandbox tip:</b> If you're in Arena's preview iframe, microphone access may be blocked. <b>Upload still works</b> (drag-drop or Browse). If upload fails, use <a href="/test-upload" class="underline font-semibold">/test-upload</a> (no-JS form). For recording, open the preview in a new tab (pop-out icon) — then allow mic.
+      <span id="originInfo" class="mono text-[10px] block mt-1 text-zinc-500"></span>
+    </div>
+  </div>
+
+  <main class="max-w-6xl mx-auto px-6 py-6 md:py-8 grid md:grid-cols-[1.1fr_0.9fr] gap-8">
+    <div class="space-y-6">
+      <div>
+        <h1 class="text-4xl md:text-5xl font-bold leading-[0.95] tracking-tight">
+          Sing <span class="bg-gradient-to-r from-purple-600 to-pink-500 bg-clip-text text-transparent">anything.</span><br>
+          Get a finished song.
+        </h1>
+        <p class="mt-4 text-zinc-600 leading-relaxed">
+          No instruments. No music theory. In <b>any language</b>. We detect your key, tempo & vocal range — then compose an accompaniment <i>around your voice</i>.
+        </p>
+        <div class="mt-3 flex flex-wrap gap-2 text-[11px] mono">
+          <span class="px-2.5 py-1 rounded-full bg-purple-100 text-purple-700">procedural synth • $0</span>
+          <span class="px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-600">Lyria $0.08 ready</span>
+          <span class="px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-600">ElevenLabs free 10k</span>
+        </div>
+      </div>
+
+      <div>
+        <label class="text-xs uppercase tracking-widest mono text-zinc-500">Choose vibe</label>
+        <div id="stylePicker" class="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
+      </div>
+
+      <!-- Error box -->
+      <div id="errorBox" class="hidden rounded-xl bg-red-50 border border-red-200 p-3 text-xs text-red-700"></div>
+
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div id="dropZone" class="group relative rounded-[20px] border-2 border-dashed border-purple-200 bg-white p-5 hover:border-purple-400 transition cursor-pointer glow">
+          <input id="fileInput" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.webm,.ogg,.flac,.mov,.aac" class="hidden">
+          <div class="flex flex-col items-center text-center py-4">
+            <div class="w-12 h-12 rounded-full bg-purple-50 flex items-center justify-center text-2xl">🎤</div>
+            <div class="mt-3 font-semibold">Drop your singing</div>
+            <div class="text-xs text-zinc-500 mt-1">MP3, WAV, M4A, MP4, WebM — any language</div>
+            <div class="mt-3 text-[11px] mono px-3 py-1 rounded-full bg-zinc-900 text-white group-hover:bg-black">Browse files</div>
+            <div class="text-[10px] mono mt-2 text-zinc-400">or use <a href="/test-upload" class="underline">/test-upload</a></div>
+          </div>
+        </div>
+
+        <div class="rounded-[20px] border border-zinc-200 bg-white p-5">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">Record now</div>
+            <div id="recStatus" class="text-[10px] mono px-2 py-1 rounded-full bg-zinc-100">idle</div>
+          </div>
+          <div class="mt-4 flex items-center gap-3">
+            <button id="recBtn" class="w-14 h-14 rounded-full bg-gradient-to-br from-red-500 to-pink-500 text-white text-xl flex items-center justify-center shadow-lg hover:scale-105 transition">●</button>
+            <div class="flex-1">
+              <div id="recTimer" class="mono text-sm">00:00</div>
+              <div class="mt-2 h-[24px] flex items-end gap-[2px]" id="liveBars"></div>
+              <div id="recHint" class="text-[11px] text-zinc-500 mt-1">Needs mic permission. If blocked in iframe, open in new tab.</div>
+            </div>
+          </div>
+          <audio id="recPreview" controls class="w-full mt-3 hidden"></audio>
+        </div>
+      </div>
+
+      <div id="fileInfo" class="hidden rounded-2xl bg-white border border-zinc-200 p-4 flex items-center gap-3">
+        <div class="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">🎵</div>
+        <div class="flex-1 min-w-0">
+          <div id="fileName" class="font-medium truncate text-sm"></div>
+          <div id="fileMeta" class="text-xs text-zinc-500 mono"></div>
+        </div>
+        <button id="clearFile" class="text-xs px-3 py-1 rounded-full bg-zinc-100 hover:bg-zinc-200">clear</button>
+      </div>
+
+      <button id="generateBtn" disabled class="w-full h-[56px] rounded-full bg-zinc-300 text-zinc-500 font-semibold tracking-wide cursor-not-allowed transition flex items-center justify-center gap-2">
+        <span>Generate my song</span><span>→</span>
+      </button>
+      <div class="text-[11px] text-zinc-500 mono text-center">Zero-cost pipeline: extract → analyze → compose → mix → master • ~20-40 sec for 30s vocal</div>
+
+      <!-- Debug console -->
+      <details class="rounded-xl bg-zinc-50 border border-zinc-200 p-3">
+        <summary class="text-xs mono cursor-pointer">Debug console (click to expand)</summary>
+        <pre id="debugLog" class="mt-2 text-[10px] mono whitespace-pre-wrap max-h-40 overflow-auto bg-white p-2 rounded border"></pre>
+      </details>
+    </div>
+
+    <div class="space-y-6">
+      <div id="progressCard" class="hidden rounded-[24px] bg-white border border-zinc-200 p-6 shadow-sm">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold">Crafting your song</div>
+          <div id="progressPct" class="mono text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">0%</div>
+        </div>
+        <div class="mt-4 h-2 rounded-full bg-zinc-100 overflow-hidden">
+          <div id="progressBar" class="h-full w-0 shimmer transition-all duration-500"></div>
+        </div>
+        <div id="progressMsg" class="mt-3 text-sm text-zinc-600">Queued...</div>
+        <div id="analysisBox" class="mt-5 hidden grid grid-cols-2 gap-3 text-xs">
+          <div class="rounded-xl bg-zinc-50 p-3"><div class="mono text-[10px] uppercase text-zinc-500">Key</div><div id="aKey" class="font-semibold text-sm mt-1">—</div></div>
+          <div class="rounded-xl bg-zinc-50 p-3"><div class="mono text-[10px] uppercase text-zinc-500">Tempo</div><div id="aBpm" class="font-semibold text-sm mt-1">— BPM</div></div>
+          <div class="rounded-xl bg-zinc-50 p-3"><div class="mono text-[10px] uppercase text-zinc-500">Range</div><div id="aRange" class="font-semibold text-sm mt-1">—</div></div>
+          <div class="rounded-xl bg-zinc-50 p-3"><div class="mono text-[10px] uppercase text-zinc-500">Language</div><div id="aLang" class="font-semibold text-sm mt-1">—</div></div>
+        </div>
+      </div>
+
+      <div id="resultCard" class="hidden rounded-[24px] bg-zinc-900 text-white p-6 shadow-xl">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-full bg-white text-zinc-900 flex items-center justify-center font-bold">✓</div>
+          <div class="font-semibold">Your finished song is ready</div>
+        </div>
+        <div id="resultMeta" class="mt-3 text-xs mono text-zinc-400"></div>
+        <div class="mt-5 rounded-2xl bg-zinc-800 p-4">
+          <div class="text-[11px] mono uppercase text-zinc-400">Final mix</div>
+          <audio id="finalAudio" controls class="w-full mt-2"></audio>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <a id="dlMp3" class="text-xs px-4 py-2 rounded-full bg-white text-zinc-900 font-semibold hover:bg-zinc-100" download>Download MP3</a>
+            <a id="dlWav" class="text-xs px-4 py-2 rounded-full bg-zinc-700 text-white hover:bg-zinc-600" download>Download WAV</a>
+          </div>
+        </div>
+        <div class="mt-4 grid grid-cols-2 gap-3">
+          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Vocal stem</div><audio id="vocalAudio" controls class="w-full mt-2 h-8"></audio></div>
+          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Accompaniment</div><audio id="accAudio" controls class="w-full mt-2 h-8"></audio></div>
+        </div>
+        <div id="lyricsBox" class="mt-5 hidden rounded-2xl bg-zinc-800 p-4">
+          <div class="text-[11px] mono uppercase text-zinc-400">Lyrics (auto-detected)</div>
+          <div id="lyricsText" class="mt-2 text-sm leading-relaxed text-zinc-200"></div>
+        </div>
+        <div class="mt-6 flex gap-2">
+          <button id="newSongBtn" class="flex-1 h-10 rounded-full bg-purple-600 hover:bg-purple-500 font-semibold text-sm">Make another</button>
+          <button id="shareBtn" class="h-10 px-5 rounded-full bg-zinc-800 hover:bg-zinc-700 text-sm">Share</button>
+        </div>
+      </div>
+
+      <div class="rounded-[24px] bg-white border border-purple-100 p-6">
+        <div class="font-semibold">How this zero-cost MVP works</div>
+        <div class="mt-3 space-y-3 text-sm text-zinc-600 leading-relaxed">
+          <p><b>1. You sing.</b> Any language, off-key is okay — we tune the <i>track</i> to you.</p>
+          <p><b>2. We analyze.</b> BPM, key, range — all local.</p>
+          <p><b>3. We compose.</b> Procedural synth in <i>your</i> key & tempo.</p>
+          <p><b>4. Mix & master.</b> Sidechain ducking, -14 LUFS, MP3 320k.</p>
+        </div>
+      </div>
+
+      <div class="rounded-[24px] bg-white border border-zinc-200 p-6">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold text-sm">Recent songs</div>
+          <button id="refreshJobs" class="text-[11px] mono px-2 py-1 rounded-full bg-zinc-100">refresh</button>
+        </div>
+        <div id="jobsList" class="mt-3 space-y-2 text-xs mono text-zinc-500">loading...</div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="max-w-6xl mx-auto px-6 py-10 text-[11px] mono text-zinc-400">
+    SingSmith MVP v0.2 • Fixed sandbox routing • <a href="/api/health" class="underline">API</a> • <a href="/test-upload" class="underline">Fallback upload</a>
+  </footer>
+
+<script src="/web/app.js?v=2"></script>
+</body>
+</html>
