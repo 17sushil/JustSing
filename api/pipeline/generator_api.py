@@ -281,11 +281,22 @@ def generate_with_lyria(analysis: dict, out_path: Path, style="warm-acoustic"):
 def generate_with_stable_audio(analysis: dict, out_path: Path, style="warm-acoustic"):
     raise NotImplementedError("Stable Audio self-host not wired")
 
-def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acoustic"):
+def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acoustic", vocal_path: Path = None):
+    """
+    FIXED v0.6: Now supports TRUE dynamic voice-adaptive via openrouter-dynamic
+    - procedural: $0, varied per song via hash seed
+    - openrouter: prompt-based adaptive (key/BPM/range + hash variation)
+    - openrouter-dynamic / dynamic: TRUE audio-to-music, OpenRouter LISTENS to voice (2-step: analyze voice via Gemini audio input, then generate music via Lyria)
+    """
     gen = (GENERATOR or "procedural").lower().strip()
     from .generator_procedural import generate_accompaniment as gen_proc
+
+    # Normalize aliases
     if gen in ("openrouter", "or", "lyria-openrouter", "openrouter/lyria", "google/lyria-3-pro-preview", "google/lyria-3-clip-preview"):
         gen = "openrouter"
+    if gen in ("openrouter-dynamic", "dynamic", "or-dynamic", "sora", "voice-adaptive", "audio-to-music"):
+        gen = "openrouter-dynamic"
+
     try:
         if gen == "elevenlabs":
             return generate_with_elevenlabs(analysis, out_path, style)
@@ -293,6 +304,14 @@ def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acou
             return generate_with_lyria(analysis, out_path, style)
         elif gen == "openrouter":
             return generate_with_openrouter(analysis, out_path, style)
+        elif gen == "openrouter-dynamic":
+            # TRUE dynamic: needs vocal_path
+            if vocal_path is None:
+                print("[generator] openrouter-dynamic needs vocal_path, falling back to openrouter prompt-based")
+                return generate_with_openrouter(analysis, out_path, style)
+            # Import dynamic module
+            from .generator_openrouter_dynamic import generate_with_openrouter_dynamic
+            return generate_with_openrouter_dynamic(vocal_path, analysis, out_path, style)
         elif gen in ("stable-audio-open", "stable_audio", "stable"):
             return generate_with_stable_audio(analysis, out_path, style)
         elif gen == "musicgen":

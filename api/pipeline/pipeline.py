@@ -47,12 +47,25 @@ def run_pipeline(job_id: str, input_file: Path, style="warm-acoustic"):
         update("analyzing", 35, f"Detected {analysis['key']} at {analysis['bpm']} BPM", analysis=analysis)
 
         # Stage 3: generate accompaniment
-        update("generating", 45, f"Composing {style} accompaniment in {analysis['key']}...")
+        # For dynamic mode, we pass actual vocal audio so OpenRouter LISTENS to voice
+        from ..config import GENERATOR
+        is_dynamic = "dynamic" in GENERATOR.lower()
+
+        if is_dynamic:
+            update("generating", 40, f"OpenRouter is listening to your voice and composing {style} in {analysis['key']}...")
+            # Use mono vocal for analysis upload (smaller, faster)
+            vocal_for_ai = wav_mono
+        else:
+            update("generating", 45, f"Composing {style} accompaniment in {analysis['key']}... (prompt-based)")
+            vocal_for_ai = None
 
         acc_wav = rdir / "accompaniment_raw.wav"
-        generate_accompaniment_auto(analysis, acc_wav, style=style)
+        generate_accompaniment_auto(analysis, acc_wav, style=style, vocal_path=vocal_for_ai)
 
-        update("generating", 65, "Accompaniment ready, aligning to your voice...")
+        if is_dynamic:
+            update("generating", 65, "Dynamic accompaniment ready — composed around YOUR voice...")
+        else:
+            update("generating", 65, "Accompaniment ready, aligning to your voice...")
 
         # Stage 4: tune to singer (procedural already in key/tempo, so alignment is trivial)
         # For future: pitch-shift/time-stretch here if using API generator

@@ -138,3 +138,28 @@ A: Check logs. If you see `[generator] openrouter failed (...) falling back to p
 ---
 
 **You now have 3 free paths. Start with procedural ($0), then upgrade to OpenRouter ($1 free) when you want studio quality.**
+
+## 4) OpenRouter Dynamic — TRUE Audio-to-Music (NEW v0.6, Like Sora)
+
+**Problem with old openrouter:** Prompt-only = same prompt = same music.
+
+**Solution — openrouter-dynamic (2-step, truly dynamic):**
+
+Step 1: Your actual vocal WAV (base64) → Gemini 2.5 Flash via OpenRouter (audio input model) → AI LISTENS and analyzes melody contour, rhythm, dynamics, emotion
+Step 2: Detailed adaptive prompt → Lyria 3 Pro via OpenRouter → music that FOLLOWS your voice
+
+Cost: ~$0.01 analysis + $0.08 music = $0.09/song. $1 free = ~11 dynamic songs.
+
+**Set:**
+```bash
+GENERATOR=openrouter-dynamic
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=google/lyria-3-pro-preview
+```
+
+**How it differs:**
+- `openrouter` = prompt-based: key/BPM/range + hash → Lyria (fast, $0.08, but same key/BPM can give similar music)
+- `openrouter-dynamic` = audio-to-music: actual audio → Gemini analyzes → Lyria (slower ~20-40s, $0.09, truly unique per voice, like Sora)
+
+**Use dynamic when:** You want music that truly follows your vocal melody and emotion, not just key/BPM.
+
