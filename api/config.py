@@ -1,6 +1,17 @@
 import os
 from pathlib import Path
 
+# Load .env file automatically if python-dotenv is installed (for VS Code local run)
+try:
+    from dotenv import load_dotenv
+    # Root dir = /home/user/singsmith
+    _env_path = Path(__file__).resolve().parent.parent / ".env"
+    if _env_path.exists():
+        load_dotenv(_env_path)
+        print(f"[config] Loaded .env from {_env_path}")
+except ImportError:
+    pass  # dotenv not installed, use system env vars (pip install python-dotenv)
+
 # Root dir = /home/user/singsmith
 ROOT = Path(__file__).resolve().parent.parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", ROOT / "storage")).resolve()

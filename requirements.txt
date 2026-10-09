@@ -6,3 +6,5 @@ numpy
 scipy
 soundfile
 imageio-ffmpeg
+python-dotenv
+requests
