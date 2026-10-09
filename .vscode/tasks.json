@@ -1,0 +1,26 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Install deps",
+      "type": "shell",
+      "command": "${command:python.interpreterPath} -m pip install -r requirements.txt",
+      "presentation": { "reveal": "always", "panel": "new" }
+    },
+    {
+      "label": "Run SingSmith (procedural $0)",
+      "type": "shell",
+      "command": "${command:python.interpreterPath} -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload",
+      "options": { "env": { "GENERATOR": "procedural" } },
+      "presentation": { "reveal": "always", "panel": "new" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Test upload with sample",
+      "type": "shell",
+      "command": "python -c \"import numpy as np, soundfile as sf; sr=44100; t=np.linspace(0,3,int(sr*3)); sf.write('/tmp/test.wav', 0.5*np.sin(2*np.pi*261*t), sr)\" && curl -F \"file=@/tmp/test.wav\" -F \"style=warm-acoustic\" http://localhost:8000/api/upload",
+      "presentation": { "reveal": "always" }
+    }
+  ]
+}

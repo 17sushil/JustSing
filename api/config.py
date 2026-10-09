@@ -19,6 +19,10 @@ MP3_BITRATE = os.getenv("MP3_BITRATE", "320k")
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/lyria-3-pro-preview")  # or google/lyria-3-clip-preview ($0.04) or minimax/music-2.6-free
+OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "https://github.com/17sushil/JustSing")
+OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "JustSing")
 
 # Procedural generator styles
 STYLES = ["warm-acoustic", "lofi-chill", "piano-ballad", "indie-pop", "cinematic"]

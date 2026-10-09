@@ -1,0 +1,56 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SingSmith API (procedural $0 - No Key)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "env": {
+        "GENERATOR": "procedural",
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "SingSmith API (OpenRouter FREE $1 = 12 songs)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "env": {
+        "GENERATOR": "openrouter",
+        "OPENROUTER_API_KEY": "${env:OPENROUTER_API_KEY}",
+        "OPENROUTER_MODEL": "google/lyria-3-pro-preview",
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "SingSmith API (ElevenLabs FREE 10k/month)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "env": {
+        "GENERATOR": "elevenlabs",
+        "ELEVENLABS_API_KEY": "${env:ELEVENLABS_API_KEY}",
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "SingSmith API (Lyria Direct $0.08)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "env": {
+        "GENERATOR": "lyria",
+        "GEMINI_API_KEY": "${env:GEMINI_API_KEY}",
+        "PYTHONPATH": "${workspaceFolder}"
+      }
+    }
+  ]
+}
