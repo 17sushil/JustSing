@@ -1,3 +1,13 @@
 # Optional: enables lyrics transcription + language detection (any language).
 # If this fails to install or you set WHISPER=off, the app works fine without it.
 faster-whisper
+
+# Optional: Mureka-level quality — MusicGen Melody (melody-guided, follows your voice)
+# Zero-cost, self-hosted, no API key, but needs torch + 1-4GB download
+# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+# pip install audiocraft
+# Then: GENERATOR=musicgen-melody
+torch
+torchaudio
+audiocraft
+

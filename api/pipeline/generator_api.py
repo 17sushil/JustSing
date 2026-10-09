@@ -448,6 +448,16 @@ def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acou
         gen = "openrouter"
     if gen in ("openrouter-dynamic", "dynamic", "or-dynamic", "sora", "voice-adaptive", "audio-to-music"):
         gen = "openrouter-dynamic"
+    if gen in ("musicgen-melody", "musicgen", "mg-melody", "mureka", "melody"):
+        gen = "musicgen-melody"
+    if gen in ("musicgen-small", "mg-small"):
+        gen = "musicgen-small"
+    if gen in ("musicgen-medium", "mg-medium"):
+        gen = "musicgen-medium"
+    if gen in ("musicgen-large", "mg-large"):
+        gen = "musicgen-large"
+    if gen in ("musicgen-stereo-melody", "stereo-melody"):
+        gen = "musicgen-stereo-melody"
 
     try:
         if gen == "elevenlabs":
@@ -462,6 +472,29 @@ def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acou
                 return generate_with_openrouter(analysis, out_path, style)
             from .generator_openrouter_dynamic import generate_with_openrouter_dynamic
             return generate_with_openrouter_dynamic(vocal_path, analysis, out_path, style)
+        elif gen == "musicgen-melody":
+            if vocal_path is None:
+                print("[generator] musicgen-melody needs vocal_path, using procedural as fallback for analysis")
+                # For melody we need vocal, but if not provided, use text-only small
+                from .generator_musicgen_melody import generate_with_musicgen_melody
+                # Try to find vocal from analysis? Use None fallback
+                # If no vocal, generate text-only via small model
+                return generate_with_musicgen_melody(vocal_path or out_path, analysis, out_path, style, model_name="melody")
+            from .generator_musicgen_melody import generate_with_musicgen_melody
+            return generate_with_musicgen_melody(vocal_path, analysis, out_path, style, model_name="melody")
+        elif gen == "musicgen-small":
+            from .generator_musicgen_melody import generate_with_musicgen_melody
+            # small is text-only, vocal optional
+            return generate_with_musicgen_melody(vocal_path or out_path, analysis, out_path, style, model_name="small")
+        elif gen == "musicgen-medium":
+            from .generator_musicgen_melody import generate_with_musicgen_melody
+            return generate_with_musicgen_melody(vocal_path or out_path, analysis, out_path, style, model_name="medium")
+        elif gen == "musicgen-large":
+            from .generator_musicgen_melody import generate_with_musicgen_melody
+            return generate_with_musicgen_melody(vocal_path or out_path, analysis, out_path, style, model_name="large")
+        elif gen == "musicgen-stereo-melody":
+            from .generator_musicgen_melody import generate_with_musicgen_melody
+            return generate_with_musicgen_melody(vocal_path, analysis, out_path, style, model_name="stereo-melody")
         elif gen in ("stable-audio-open", "stable_audio", "stable"):
             return generate_with_stable_audio(analysis, out_path, style)
         elif gen == "musicgen":
@@ -470,5 +503,5 @@ def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acou
             return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"), vocal_path=vocal_path)
     except Exception as e:
         import traceback
-        print(f"[generator] {gen} failed ({e}), falling back to procedural aligned\n{traceback.format_exc()[:1000]}")
+        print(f"[generator] {gen} failed ({e}), falling back to procedural v0.10\n{traceback.format_exc()[:1000]}")
         return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"), vocal_path=vocal_path)

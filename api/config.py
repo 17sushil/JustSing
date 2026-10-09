@@ -20,7 +20,7 @@ STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 (JOBS_DIR := STORAGE_DIR / "jobs").mkdir(exist_ok=True)
 (RENDERS_DIR := STORAGE_DIR / "renders").mkdir(exist_ok=True)
 
-GENERATOR = os.getenv("GENERATOR", "procedural").lower()  # procedural | elevenlabs | lyria | stable-audio-open | musicgen
+GENERATOR = os.getenv("GENERATOR", "procedural").lower()  # procedural | musicgen-melody | musicgen-small | openrouter | openrouter-dynamic | elevenlabs | lyria | stable-audio-open
 SEPARATOR = os.getenv("SEPARATOR", "none").lower()  # none | demucs
 WHISPER = os.getenv("WHISPER", "auto").lower()  # auto | off
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
