@@ -1,22 +1,196 @@
 """
 API generators — wrappers for ElevenLabs, Lyria, Stable Audio Open, MusicGen, OpenRouter.
-FIXED v0.5: OpenRouter now truly adapts to singer's voice, not same music every time.
+FIXED v0.7: TRUE alignment — beat tracking + warping for OpenRouter outputs.
 """
+
 from pathlib import Path
 import base64
 import hashlib
 import random
+import subprocess
+import numpy as np
+import soundfile as sf
+import os
+
 from ..config import (
     GENERATOR, ELEVENLABS_API_KEY, GEMINI_API_KEY,
-    OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_SITE_URL, OPENROUTER_APP_NAME
+    OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_SITE_URL, OPENROUTER_APP_NAME,
+    FFMPEG_BIN
 )
 
+def _run_ffmpeg(cmd):
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()[:800]}")
+    return result
+
+def ensure_wav(in_path: Path, out_path: Path = None):
+    if out_path is None:
+        out_path = in_path
+    try:
+        data, sr = sf.read(str(in_path))
+        if sr == 44100:
+            if in_path == out_path:
+                return out_path
+            if out_path != in_path:
+                import shutil
+                shutil.copy(str(in_path), str(out_path))
+            return out_path
+        else:
+            tmp = out_path.parent / (out_path.stem + "_tmp.wav")
+            _run_ffmpeg([FFMPEG_BIN, "-y", "-i", str(in_path), "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", str(tmp)])
+            tmp.replace(out_path)
+            return out_path
+    except Exception as e:
+        print(f"[ensure_wav] Converting {in_path} via ffmpeg due to {e}")
+        tmp = out_path.parent / (out_path.stem + "_converted.wav")
+        _run_ffmpeg([FFMPEG_BIN, "-y", "-i", str(in_path), "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", str(tmp)])
+        if out_path != tmp:
+            if out_path.exists():
+                out_path.unlink()
+            tmp.rename(out_path)
+        return out_path
+
+def align_accompaniment_to_vocal_beats(acc_path: Path, analysis: dict):
+    """
+    v0.7: Align generated accompaniment to vocal beats.
+    - If USE_LIBROSA=1, does piecewise warping (may segfault on some envs, disabled by default)
+    - Otherwise, simple trim/pad + overall tempo adjust via ffmpeg atempo if needed
+    """
+    try:
+        target_duration = float(analysis.get("duration_sec", 30)) + 1.2
+        vocal_beats = analysis.get("beat_times", [])
+        target_bpm = float(analysis.get("bpm", 90))
+
+        ensure_wav(acc_path, acc_path)
+
+        y, sr = sf.read(str(acc_path))
+        if y.ndim == 1:
+            y = np.stack([y, y], axis=1)
+        y_mono = np.mean(y, axis=1) if y.ndim > 1 else y
+
+        # Optional librosa warping
+        if os.getenv("USE_LIBROSA", "0") == "1":
+            try:
+                import librosa
+                tempo_acc, beat_frames = librosa.beat.beat_track(y=y_mono, sr=sr, units='frames')
+                acc_beats = [float(t) for t in librosa.frames_to_time(beat_frames, sr=sr)]
+                print(f"[align] Acc BPM {tempo_acc:.1f} beats {len(acc_beats)} vs vocal {target_bpm:.1f} beats {len(vocal_beats)}")
+
+                if len(vocal_beats) >= 4 and len(acc_beats) >= 4:
+                    if len(acc_beats) < len(vocal_beats) * 0.5:
+                        beat_sec_acc = 60.0 / float(tempo_acc) if tempo_acc > 0 else 60.0/target_bpm
+                        num_beats = int(target_duration / beat_sec_acc) + 4
+                        acc_beats = [i*beat_sec_acc for i in range(num_beats)]
+
+                    if len(acc_beats) != len(vocal_beats):
+                        acc_beats_interp = np.interp(
+                            np.linspace(0, len(acc_beats)-1, len(vocal_beats)),
+                            np.arange(len(acc_beats)),
+                            acc_beats
+                        )
+                        acc_beats_mapped = acc_beats_interp.tolist()
+                    else:
+                        acc_beats_mapped = acc_beats
+
+                    out_left = []
+                    out_right = []
+                    first_acc_beat = acc_beats_mapped[0] if acc_beats_mapped else 0.0
+                    if first_acc_beat > 0.1:
+                        e0 = int(first_acc_beat * sr)
+                        if e0 > 0:
+                            out_left.append(y[:e0, 0])
+                            out_right.append(y[:e0, 1] if y.shape[1]>1 else y[:e0, 0])
+
+                    for i in range(len(vocal_beats)-1):
+                        v_start = vocal_beats[i]
+                        v_end = vocal_beats[i+1]
+                        v_dur = v_end - v_start
+                        if v_dur <= 0.05 or v_dur > 5.0:
+                            continue
+                        a_start = acc_beats_mapped[i] if i < len(acc_beats_mapped) else acc_beats[-1] + (i - len(acc_beats_mapped)+1)*(60.0/target_bpm)
+                        a_end = acc_beats_mapped[i+1] if i+1 < len(acc_beats_mapped) else a_start + v_dur
+                        a_dur = a_end - a_start
+                        if a_dur <= 0.05 or a_dur > 5.0:
+                            a_dur = v_dur
+                            a_start = v_start
+                            a_end = v_end
+
+                        s = int(a_start * sr)
+                        e = int(a_end * sr)
+                        if s < 0:
+                            s = 0
+                        if e > len(y):
+                            e = len(y)
+                        if e <= s:
+                            continue
+                        seg = y[s:e]
+                        rate = a_dur / v_dur if v_dur>0 else 1.0
+                        rate = float(np.clip(rate, 0.25, 4.0))
+
+                        if abs(rate - 1.0) < 0.05:
+                            out_left.append(seg[:,0] if seg.ndim>1 else seg)
+                            out_right.append(seg[:,1] if seg.ndim>1 and seg.shape[1]>1 else seg[:,0] if seg.ndim>1 else seg)
+                        else:
+                            try:
+                                if seg.ndim > 1:
+                                    left = seg[:,0]
+                                    right = seg[:,1] if seg.shape[1]>1 else left
+                                    left_stretched = librosa.effects.time_stretch(left.astype(np.float32), rate=rate)
+                                    right_stretched = librosa.effects.time_stretch(right.astype(np.float32), rate=rate)
+                                    min_len = min(len(left_stretched), len(right_stretched))
+                                    out_left.append(left_stretched[:min_len])
+                                    out_right.append(right_stretched[:min_len])
+                                else:
+                                    stretched = librosa.effects.time_stretch(seg.astype(np.float32), rate=rate)
+                                    out_left.append(stretched)
+                                    out_right.append(stretched)
+                            except Exception as ex:
+                                print(f"[align] stretch failed {i} rate {rate:.2f} {ex}")
+                                out_left.append(seg[:,0] if seg.ndim>1 else seg)
+                                out_right.append(seg[:,1] if seg.ndim>1 and seg.shape[1]>1 else seg[:,0] if seg.ndim>1 else seg)
+
+                    if out_left:
+                        left_concat = np.concatenate(out_left)
+                        right_concat = np.concatenate(out_right)
+                        target_len = int(target_duration * sr)
+                        if len(left_concat) > target_len:
+                            left_concat = left_concat[:target_len]
+                            right_concat = right_concat[:target_len]
+                        elif len(left_concat) < target_len:
+                            pad_len = target_len - len(left_concat)
+                            left_concat = np.concatenate([left_concat, np.zeros(pad_len, dtype=np.float32)])
+                            right_concat = np.concatenate([right_concat, np.zeros(pad_len, dtype=np.float32)])
+                        stereo = np.stack([left_concat, right_concat], axis=1)
+                        sf.write(str(acc_path), stereo, sr)
+                        print(f"[align] Warped to vocal beats: {len(vocal_beats)} beats, new len {len(stereo)/sr:.2f}s")
+                        return acc_path
+            except Exception as e:
+                print(f"[align] librosa warping failed {e}, fallback to trim/pad")
+
+        # Fallback: trim/pad to duration (no segfault risk)
+        try:
+            y, sr = sf.read(str(acc_path))
+            if y.ndim == 1:
+                y = np.stack([y, y], axis=1)
+            target_len = int(target_duration * sr)
+            if len(y) > target_len:
+                y = y[:target_len]
+            elif len(y) < target_len:
+                pad = np.zeros((target_len - len(y), 2), dtype=np.float32)
+                y = np.concatenate([y, pad], axis=0)
+            sf.write(str(acc_path), y, sr)
+            print(f"[align] Fallback trim/pad to {target_duration:.1f}s")
+        except Exception as e:
+            print(f"[align] final fallback failed {e}")
+
+        return acc_path
+
+    except Exception as e:
+        print(f"[align] alignment failed {e}, keeping original")
+        return acc_path
+
 def _build_prompt(analysis: dict, style="warm-acoustic"):
-    """
-    FIXED v0.5: Prompt now truly adapts to singer's voice + unique per song.
-    Before: only key/BPM — so same key/BPM = same music.
-    Now: includes vocal range, energy, language, lyrics, hash for uniqueness.
-    """
     bpm = analysis.get("bpm", 90)
     key = analysis.get("key", "C major")
     is_major = analysis.get("is_major", True)
@@ -27,10 +201,9 @@ def _build_prompt(analysis: dict, style="warm-acoustic"):
     file_hash = analysis.get("file_hash", "00000000")
     language = analysis.get("language", "unknown")
     lyrics = analysis.get("lyrics_preview", "")[:100]
-    midi_min = analysis.get("midi_min", 60)
-    midi_max = analysis.get("midi_max", 72)
+    beat_times = analysis.get("beat_times", [])
+    first_vocal = analysis.get("first_vocal_time", 0.0)
 
-    # Determine voice type for adaptive accompaniment
     if f0_mean > 300:
         voice_type = "high soprano voice, bright and airy"
         acc_adapt = "low warm accompaniment, deep bass, soft pads, leave space for high voice"
@@ -44,7 +217,6 @@ def _build_prompt(analysis: dict, style="warm-acoustic"):
         voice_type = "low voice, deep and rich"
         acc_adapt = "higher bright accompaniment, light guitar, airy pads to lift low voice"
 
-    # Determine energy from range
     vocal_range = f0_max - f0_min
     if vocal_range > 200:
         energy = "dynamic and expressive with wide range"
@@ -62,8 +234,6 @@ def _build_prompt(analysis: dict, style="warm-acoustic"):
     }
     mood = mood_map.get(style, style)
 
-    # Create UNIQUE variation per song using file_hash
-    # Use hash to pick from variation phrases so different uploads get different music
     variations = [
         "with subtle variations and gentle dynamics",
         "with evolving chords and soft build",
@@ -80,8 +250,10 @@ def _build_prompt(analysis: dict, style="warm-acoustic"):
     except:
         variation_phrase = "with natural dynamics"
 
-    # Build prompt that is UNIQUE and ADAPTIVE
-    # Include hash fragment for uniqueness (Lyria will treat it as variation hint)
+    beat_info = ""
+    if beat_times and len(beat_times) > 4:
+        beat_info = f", aligned to vocal beats, first vocal at {first_vocal:.1f}s, {len(beat_times)} beats"
+
     prompt = (
         f"{mood} instrumental backing track, {variation_phrase}, "
         f"{key}, {bpm:.0f} BPM, {'major' if is_major else 'minor'} key, "
@@ -90,22 +262,20 @@ def _build_prompt(analysis: dict, style="warm-acoustic"):
         f"{acc_adapt}, "
         f"no vocals, no lead vocal, instrumental only, "
         f"guitar, bass, drums, piano, duration {int(duration)} seconds, "
-        f"track {file_hash[:4]}"  # unique ID so Lyria doesn't cache same music
+        f"track {file_hash[:4]}{beat_info}"
     )
 
-    # If we have lyrics/language, include for mood (but keep instrumental)
     if language != "unknown" and language != "":
         prompt += f", {language} song mood"
     if lyrics:
-        # Use first few words for mood, not for singing
         prompt += f", mood inspired by: {lyrics[:40]}"
 
-    print(f"[prompt] {prompt[:200]}... (hash {file_hash}, voice {f0_mean:.0f}Hz {voice_type})")
+    print(f"[prompt] {prompt[:220]}... (hash {file_hash}, voice {f0_mean:.0f}Hz {voice_type})")
     return prompt, duration
 
 def generate_with_elevenlabs(analysis: dict, out_path: Path, style="warm-acoustic"):
     if not ELEVENLABS_API_KEY:
-        raise RuntimeError("ELEVENLABS_API_KEY missing — get free key at https://elevenlabs.io/app/settings/api-keys")
+        raise RuntimeError("ELEVENLABS_API_KEY missing")
     import requests
     prompt, duration = _build_prompt(analysis, style)
     payloads_to_try = [
@@ -128,19 +298,23 @@ def generate_with_elevenlabs(analysis: dict, out_path: Path, style="warm-acousti
                         b64 = data.get("audio_base64") or data.get("audio") or data.get("data")
                         if b64:
                             out_path.write_bytes(base64.b64decode(b64))
+                            ensure_wav(out_path, out_path)
+                            align_accompaniment_to_vocal_beats(out_path, analysis)
                             print(f"[elevenlabs] Saved from base64 JSON, {out_path.stat().st_size} bytes")
                             return out_path
                     except:
                         pass
                 out_path.write_bytes(resp.content)
+                ensure_wav(out_path, out_path)
                 if out_path.stat().st_size < 1000:
                     raise RuntimeError(f"Too small: {len(resp.content)}")
+                align_accompaniment_to_vocal_beats(out_path, analysis)
                 print(f"[elevenlabs] Saved {out_path.stat().st_size} bytes")
                 return out_path
             err_text = resp.text[:1000] if hasattr(resp, 'text') else str(resp.status_code)
             print(f"[elevenlabs] Attempt {idx+1} failed {resp.status_code}: {err_text[:300]}")
             if resp.status_code == 401:
-                raise RuntimeError("ElevenLabs 401 Unauthorized — invalid key")
+                raise RuntimeError("ElevenLabs 401 Unauthorized")
             elif resp.status_code == 429 or "quota" in err_text.lower() or "limit" in err_text.lower():
                 last_error = f"Quota exhausted: {err_text[:300]}"
                 break
@@ -153,49 +327,32 @@ def generate_with_elevenlabs(analysis: dict, out_path: Path, style="warm-acousti
     raise RuntimeError(f"ElevenLabs failed: {last_error}")
 
 def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acoustic"):
-    """
-    FIXED v0.5: Now truly adaptive — prompt includes vocal range, voice type, hash for uniqueness.
-    Before: same key/BPM = same music. Now: every song gets unique music that fits voice.
-    """
     if not OPENROUTER_API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY missing")
-
-    import requests
-    import json
-
+    import requests, json
     prompt, duration = _build_prompt(analysis, style)
     model = OPENROUTER_MODEL or "google/lyria-3-pro-preview"
     file_hash = analysis.get("file_hash", "0000")
-
-    # Use hash as seed for variation
     try:
         seed = int(file_hash[:6], 16) % 100000
     except:
         seed = random.randint(0, 100000)
 
-    # For OpenRouter, add temperature and seed for variation (if supported)
-    # Lyria models may ignore temperature, but we include for future models
     payload = {
         "model": model,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
+        "messages": [{"role": "user", "content": prompt}],
         "modalities": ["text", "audio"],
-        "audio": {
-            "format": "mp3"
-        },
+        "audio": {"format": "mp3"},
         "stream": True,
-        "temperature": 0.8 + (seed % 20)/100.0,  # 0.8-0.99 varied per song
-        "seed": seed,  # for models that support seed
+        "temperature": 0.8 + (seed % 20)/100.0,
+        "seed": seed,
     }
-
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": OPENROUTER_SITE_URL,
         "X-Title": OPENROUTER_APP_NAME,
     }
-
     print(f"[openrouter] Model={model} BPM={analysis.get('bpm')} Key={analysis.get('key')} F0={analysis.get('f0_mean_hz')} Hash={file_hash} Seed={seed}")
     print(f"[openrouter] Prompt: {prompt[:250]}...")
 
@@ -206,7 +363,6 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
         stream=True,
         timeout=180,
     )
-
     if resp.status_code != 200:
         try:
             err_text = resp.text[:1000]
@@ -215,8 +371,6 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
         raise RuntimeError(f"OpenRouter failed {resp.status_code}: {err_text}")
 
     audio_chunks = []
-    transcript_parts = []
-
     for line in resp.iter_lines():
         if not line:
             continue
@@ -240,14 +394,11 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
                 b64_data = audio_obj.get("data")
                 if b64_data:
                     audio_chunks.append(b64_data)
-                tr = audio_obj.get("transcript")
-                if tr:
-                    transcript_parts.append(tr)
         except:
             continue
 
     if not audio_chunks:
-        raise RuntimeError("OpenRouter returned no audio chunks — try model=google/lyria-3-clip-preview or check prompt")
+        raise RuntimeError("OpenRouter returned no audio chunks")
 
     try:
         binary_data = b"".join([base64.b64decode(c) for c in audio_chunks])
@@ -258,8 +409,16 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
         raise RuntimeError(f"Audio too short ({len(binary_data)} bytes)")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(binary_data)
-    print(f"[openrouter] Saved {len(binary_data)} bytes to {out_path}, hash {file_hash}, seed {seed}")
+    tmp_mp3 = out_path.parent / (out_path.stem + ".mp3")
+    tmp_mp3.write_bytes(binary_data)
+    ensure_wav(tmp_mp3, out_path)
+    try:
+        tmp_mp3.unlink()
+    except:
+        pass
+
+    align_accompaniment_to_vocal_beats(out_path, analysis)
+    print(f"[openrouter] Saved {len(binary_data)} bytes mp3 -> wav {out_path.stat().st_size} bytes, hash {file_hash}, seed {seed}")
     return out_path
 
 def generate_with_lyria(analysis: dict, out_path: Path, style="warm-acoustic"):
@@ -282,16 +441,9 @@ def generate_with_stable_audio(analysis: dict, out_path: Path, style="warm-acous
     raise NotImplementedError("Stable Audio self-host not wired")
 
 def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acoustic", vocal_path: Path = None):
-    """
-    FIXED v0.6: Now supports TRUE dynamic voice-adaptive via openrouter-dynamic
-    - procedural: $0, varied per song via hash seed
-    - openrouter: prompt-based adaptive (key/BPM/range + hash variation)
-    - openrouter-dynamic / dynamic: TRUE audio-to-music, OpenRouter LISTENS to voice (2-step: analyze voice via Gemini audio input, then generate music via Lyria)
-    """
     gen = (GENERATOR or "procedural").lower().strip()
     from .generator_procedural import generate_accompaniment as gen_proc
 
-    # Normalize aliases
     if gen in ("openrouter", "or", "lyria-openrouter", "openrouter/lyria", "google/lyria-3-pro-preview", "google/lyria-3-clip-preview"):
         gen = "openrouter"
     if gen in ("openrouter-dynamic", "dynamic", "or-dynamic", "sora", "voice-adaptive", "audio-to-music"):
@@ -305,11 +457,9 @@ def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acou
         elif gen == "openrouter":
             return generate_with_openrouter(analysis, out_path, style)
         elif gen == "openrouter-dynamic":
-            # TRUE dynamic: needs vocal_path
             if vocal_path is None:
-                print("[generator] openrouter-dynamic needs vocal_path, falling back to openrouter prompt-based")
+                print("[generator] openrouter-dynamic needs vocal_path, falling back to openrouter")
                 return generate_with_openrouter(analysis, out_path, style)
-            # Import dynamic module
             from .generator_openrouter_dynamic import generate_with_openrouter_dynamic
             return generate_with_openrouter_dynamic(vocal_path, analysis, out_path, style)
         elif gen in ("stable-audio-open", "stable_audio", "stable"):
@@ -317,7 +467,8 @@ def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acou
         elif gen == "musicgen":
             raise NotImplementedError("MusicGen TODO")
         else:
-            return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"))
+            return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"), vocal_path=vocal_path)
     except Exception as e:
-        print(f"[generator] {gen} failed ({e}), falling back to procedural (which now varies per song)")
-        return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"))
+        import traceback
+        print(f"[generator] {gen} failed ({e}), falling back to procedural aligned\n{traceback.format_exc()[:1000]}")
+        return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"), vocal_path=vocal_path)

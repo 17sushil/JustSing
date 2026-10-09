@@ -8,3 +8,5 @@ soundfile
 imageio-ffmpeg
 python-dotenv
 requests
+librosa
+audioread

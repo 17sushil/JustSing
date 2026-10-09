@@ -1,12 +1,15 @@
 """
-SingSmith Procedural Generator v0.6.1 — TRUE dynamic voice-following per bar
-FIXES same-music bug: Music now follows vocal melody per bar, not just overall key/BPM.
+SingSmith Procedural Generator v0.7 — TRUE alignment: locks to vocal beats, onsets, phrases
+FIXES 0% aligned bug: Music now follows vocal timing, not just key/BPM.
 
-- Uses file_hash seed for unique music per upload
-- Analyzes vocal F0 and energy per bar, makes bass follow contour, chords velocity follows energy
-- High voice -> low bass, low voice -> bright accompaniment
-- Multiple chord progressions, drum patterns, humanization
-- Vocal 100% preserved (see mix.py)
+- Uses beat_times and bar_times from analysis (librosa or energy fallback)
+- Drums placed on actual beat_times, not fixed grid
+- Bass and chords change on bar_times derived from beats
+- Bass root follows vocal F0 contour per bar (vocal_midi -19)
+- Chords velocity follows energy per bar
+- Onset following: extra accent when singer starts phrase
+- First vocal time handling: intro if vocal starts late
+- Seed from file_hash for uniqueness per song
 """
 
 import numpy as np
@@ -154,20 +157,26 @@ def get_chord_progression(root_midi, is_major=True, style="warm-acoustic", seed=
     print(f"[generator] Style {style} {key_type} prog {prog_idx} degrees {degrees} seed {seed}")
     return chords
 
-def analyze_vocal_per_bar(vocal_path: Path, sr_target, total_duration, bar_sec, analysis):
+def analyze_vocal_per_bar_aligned(vocal_path: Path, bar_times, analysis):
+    """
+    Analyze vocal F0 and energy per bar using actual bar_times (from beat tracking)
+    Returns f0_per_bar, energy_per_bar aligned to bar_times
+    """
     f0_per_bar = []
     energy_per_bar = []
     try:
         y_vocal, sr_v = sf.read(str(vocal_path))
         if y_vocal.ndim > 1:
             y_vocal = np.mean(y_vocal, axis=1)
-        num_bars = int(math.ceil(total_duration / bar_sec))
+        num_bars = len(bar_times)
         for bar_idx in range(num_bars):
-            start_sample = int(bar_idx * bar_sec * sr_v)
-            end_sample = int(min((bar_idx+1)*bar_sec*sr_v, len(y_vocal)))
+            start_t = bar_times[bar_idx]
+            end_t = bar_times[bar_idx+1] if bar_idx+1 < len(bar_times) else start_t + 2.0
+            start_sample = int(start_t * sr_v)
+            end_sample = int(min(end_t * sr_v, len(y_vocal)))
             if end_sample <= start_sample:
                 f0_per_bar.append(analysis.get("f0_mean_hz", 180))
-                energy_per_bar.append(0.1)
+                energy_per_bar.append(0.05)
                 continue
             bar_audio = y_vocal[start_sample:end_sample]
             energy = float(np.mean(np.abs(bar_audio)))
@@ -176,7 +185,8 @@ def analyze_vocal_per_bar(vocal_path: Path, sr_target, total_duration, bar_sec, 
                 f0_per_bar.append(f0_per_bar[-1] if f0_per_bar else analysis.get("f0_mean_hz", 180))
             else:
                 try:
-                    chunk = bar_audio[:4096]
+                    # Use spectral peak for quick F0 estimate per bar
+                    chunk = bar_audio[:min(4096, len(bar_audio))]
                     if len(chunk) < 100:
                         f0_per_bar.append(analysis.get("f0_mean_hz", 180))
                         continue
@@ -196,10 +206,10 @@ def analyze_vocal_per_bar(vocal_path: Path, sr_target, total_duration, bar_sec, 
                         f0_per_bar.append(analysis.get("f0_mean_hz", 180))
                 except:
                     f0_per_bar.append(analysis.get("f0_mean_hz", 180))
-        print(f"[generator] Per-bar F0: {[f'{x:.0f}' for x in f0_per_bar[:8]]} Energy: {[f'{x:.3f}' for x in energy_per_bar[:8]]}")
+        print(f"[generator] Aligned per-bar F0: {[f'{x:.0f}' for x in f0_per_bar[:8]]} Energy: {[f'{x:.3f}' for x in energy_per_bar[:8]]} bars {len(bar_times)}")
     except Exception as e:
-        print(f"[generator] Per-bar analysis failed {e}")
-        num_bars = int(math.ceil(total_duration / bar_sec))
+        print(f"[generator] Per-bar aligned analysis failed {e}")
+        num_bars = len(bar_times)
         f0_per_bar = [analysis.get("f0_mean_hz", 180)] * num_bars
         energy_per_bar = [0.1] * num_bars
     return f0_per_bar, energy_per_bar
@@ -211,6 +221,10 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     key_str = analysis.get("key", "C major")
     is_major = analysis.get("is_major", True)
     file_hash = analysis.get("file_hash", "00000000")
+    beat_times = analysis.get("beat_times", [])
+    onset_times = analysis.get("onset_times", [])
+    first_vocal_time = analysis.get("first_vocal_time", 0.0)
+    bar_times = analysis.get("bar_times", [])
     
     try:
         seed = int(file_hash[:6], 16) % 10000
@@ -219,7 +233,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     
     np.random.seed(seed)
     random.seed(seed)
-    print(f"[generator] {style} {key_str} {bpm} BPM seed {seed} hash {file_hash} vocal_path={vocal_path}")
+    print(f"[generator] {style} {key_str} {bpm} BPM seed {seed} hash {file_hash} beats {len(beat_times)} bars {len(bar_times)} first_vocal {first_vocal_time:.2f}s")
 
     try:
         root_name = key_str.split()[0]
@@ -235,17 +249,43 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     except:
         root_midi = 60
 
-    total_duration = float(duration_sec or analysis.get("duration_sec", 30.0)) + 0.8
+    total_duration = float(duration_sec or analysis.get("duration_sec", 30.0)) + 1.2
+    # Ensure bar_times covers total_duration
+    if not bar_times:
+        beat_sec = 60.0 / bpm
+        bar_sec = beat_sec * 4
+        num_bars = int(math.ceil(total_duration / bar_sec)) + 1
+        bar_times = [i*bar_sec for i in range(num_bars)]
+    else:
+        # Extend bar_times if needed
+        beat_sec = 60.0 / bpm
+        bar_sec = beat_sec * 4
+        while bar_times[-1] < total_duration:
+            bar_times.append(bar_times[-1] + bar_sec)
+
+    # Also ensure beat_times covers total_duration
+    if not beat_times:
+        beat_sec = 60.0 / bpm
+        num_beats = int(math.ceil(total_duration / beat_sec)) + 4
+        beat_times = [i*beat_sec for i in range(num_beats)]
+    else:
+        beat_sec = 60.0 / bpm
+        while beat_times[-1] < total_duration:
+            beat_times.append(beat_times[-1] + beat_sec)
+
     n_total = int(sr * total_duration)
     mix_left = np.zeros(n_total, dtype=np.float32)
     mix_right = np.zeros(n_total, dtype=np.float32)
-    beat_sec = 60.0 / bpm
-    bar_sec = beat_sec * 4
 
-    f0_per_bar, energy_per_bar = analyze_vocal_per_bar(vocal_path, sr, total_duration, bar_sec, analysis) if vocal_path else ([analysis.get("f0_mean_hz",180)]*100, [0.1]*100)
+    # Per-bar vocal analysis aligned to bar_times
+    if vocal_path:
+        f0_per_bar, energy_per_bar = analyze_vocal_per_bar_aligned(vocal_path, bar_times, analysis)
+    else:
+        f0_per_bar = [analysis.get("f0_mean_hz",180)]*len(bar_times)
+        energy_per_bar = [0.1]*len(bar_times)
 
     chords = get_chord_progression(root_midi, is_major, style, seed=seed)
-    num_bars = int(math.ceil(total_duration / bar_sec))
+    num_bars = len(bar_times)
 
     drum_pattern_type = seed % 3
     if bpm > 125:
@@ -259,19 +299,33 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     hat_closed = synth_hat(sr, 0.12, closed=True, variation=variation)
     hat_open = synth_hat(sr, 0.25, closed=False, variation=variation)
 
-    for bar in range(num_bars):
-        bar_start = int(bar * bar_sec * sr)
-        bar_f0 = f0_per_bar[bar] if bar < len(f0_per_bar) else analysis.get("f0_mean_hz",180)
-        bar_energy = energy_per_bar[bar] if bar < len(energy_per_bar) else 0.1
+    # Pre-compute onset lookup for quick accent
+    onset_set = set([round(t,2) for t in onset_times])
+
+    for bar_idx in range(num_bars):
+        bar_start_t = bar_times[bar_idx]
+        bar_end_t = bar_times[bar_idx+1] if bar_idx+1 < len(bar_times) else bar_start_t + (60.0/bpm*4)
+        bar_duration = bar_end_t - bar_start_t
+        if bar_duration <= 0:
+            bar_duration = 60.0/bpm*4
+        bar_start = int(bar_start_t * sr)
+        if bar_start >= n_total:
+            break
+
+        bar_f0 = f0_per_bar[bar_idx] if bar_idx < len(f0_per_bar) else analysis.get("f0_mean_hz",180)
+        bar_energy = energy_per_bar[bar_idx] if bar_idx < len(energy_per_bar) else 0.1
         
-        chord_idx = bar % len(chords)
+        # Is this bar before vocal starts? (intro)
+        is_intro = bar_start_t + bar_duration < first_vocal_time - 0.2
+        is_silence_bar = bar_energy < 0.015
+
+        chord_idx = bar_idx % len(chords)
         chord = chords[chord_idx]
         if bar_f0 > analysis.get("f0_mean_hz",180) + 50:
             chord = [n-3 for n in chord]
         
-        chord_duration = bar_sec
         bass_root = chord[0]
-        if vocal_path and bar < len(f0_per_bar):
+        if vocal_path and bar_idx < len(f0_per_bar):
             try:
                 vocal_midi = 69 + 12*math.log2(bar_f0/440.0) if bar_f0>0 else 60
                 target_bass_midi = vocal_midi - 19
@@ -279,42 +333,68 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
                     bass_root -= 12
                 while bass_root < target_bass_midi - 6:
                     bass_root += 12
+                # Keep bass in reasonable range C2-C3
+                while bass_root < 36:
+                    bass_root += 12
+                while bass_root > 48:
+                    bass_root -= 12
             except:
                 pass
 
+        # Bass: play at bar start, duration = bar_duration * 0.85, velocity follows energy but softer in intro
         if style == "piano-ballad":
             vel = 0.68 + (bar_energy*0.5)
-            note = synth_bass_note(bass_root, sr, chord_duration, velocity=vel, variation=variation)
+            if is_intro:
+                vel *= 0.6
+            if is_silence_bar:
+                vel *= 0.3
+            note = synth_bass_note(bass_root, sr, bar_duration*0.9, velocity=vel, variation=variation)
             s = bar_start
             e = min(s+len(note), n_total)
-            mix_left[s:e] += note[:e-s] * 0.9
-            mix_right[s:e] += note[:e-s] * 0.9
+            if s < n_total:
+                mix_left[s:e] += note[:e-s] * 0.9
+                mix_right[s:e] += note[:e-s] * 0.9
         else:
-            for b in range(4):
-                if style == "lofi-chill" and b % 2 == 1 and (seed+bar)%2==0:
+            # For other styles, bass on each beat within bar that aligns to beat_times
+            # Find beats in this bar
+            beats_in_bar = [bt for bt in beat_times if bar_start_t <= bt < bar_end_t]
+            if not beats_in_bar:
+                # Fallback: 4 beats
+                beats_in_bar = [bar_start_t + i*(bar_duration/4) for i in range(4)]
+            for b_idx, beat_t in enumerate(beats_in_bar):
+                if style == "lofi-chill" and b_idx % 2 == 1 and (seed+bar_idx)%2==0:
                     continue
-                if drum_pattern_type == 2 and b in (1,3) and random.random() > 0.6:
+                if drum_pattern_type == 2 and b_idx in (1,3) and random.random() > 0.6:
                     continue
-                base_vel = 0.65 if b==0 else 0.48
+                base_vel = 0.65 if b_idx==0 else 0.48
                 vel = base_vel + bar_energy*0.3 + random.random()*0.1
-                dur = beat_sec * (1.7 if b==0 else 0.85)
+                if is_intro:
+                    vel *= 0.7
+                if is_silence_bar:
+                    vel *= 0.25
+                dur = bar_duration/4 * (1.7 if b_idx==0 else 0.85)
                 note = synth_bass_note(bass_root, sr, dur, velocity=vel, variation=variation)
-                s = bar_start + int(b*beat_sec*sr)
+                s = int(beat_t * sr)
                 e = min(s+len(note), n_total)
-                if s < n_total:
+                if 0 <= s < n_total:
                     mix_left[s:e] += note[:e-s] * 0.85
                     mix_right[s:e] += note[:e-s] * 0.85
 
+        # Chords: at bar start, duration = bar_duration, velocity follows energy
         is_bright = style in ("warm-acoustic", "indie-pop", "piano-ballad")
         upper_chord = chord[1:]
         use_strum = (style == "warm-acoustic" and (seed % 2 == 0)) or (seed % 3 == 0)
         chord_vel_base = 0.35 + bar_energy*0.4
+        if is_intro:
+            chord_vel_base *= 0.7
+        if is_silence_bar:
+            chord_vel_base *= 0.35
         
         if use_strum and style in ("warm-acoustic", "indie-pop"):
             for idx, midi_note in enumerate(upper_chord):
                 delay = idx * (0.025 + random.random()*0.015)
                 vel = chord_vel_base + random.random()*0.1
-                note = synth_chord([midi_note], sr, chord_duration - delay, velocity=vel, bright=True, variation=variation)
+                note = synth_chord([midi_note], sr, bar_duration - delay, velocity=vel, bright=True, variation=variation)
                 s = bar_start + int(delay*sr)
                 e = min(s+len(note), n_total)
                 pan = (idx / max(len(upper_chord)-1,1)) * 0.6 - 0.3 + random.random()*0.1
@@ -322,81 +402,139 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
                     mix_left[s:e] += note[:e-s] * (0.5 - pan)
                     mix_right[s:e] += note[:e-s] * (0.5 + pan)
         else:
-            vel = chord_vel_base + random.random()*0.1 + (0.05 if bar % 4 == 0 else 0)
-            chord_wave = synth_chord(upper_chord, sr, chord_duration, velocity=vel, bright=is_bright, variation=variation)
+            vel = chord_vel_base + random.random()*0.1 + (0.05 if bar_idx % 4 == 0 else 0)
+            chord_wave = synth_chord(upper_chord, sr, bar_duration, velocity=vel, bright=is_bright, variation=variation)
             s = bar_start
             e = min(s+len(chord_wave), n_total)
-            mix_left[s:e] += chord_wave[:e-s] * 0.7
-            mix_right[s:e] += chord_wave[:e-s] * 0.7
+            if s < n_total:
+                mix_left[s:e] += chord_wave[:e-s] * 0.7
+                mix_right[s:e] += chord_wave[:e-s] * 0.7
 
+        # Arpeggio: only if bar has energy, and follows beats
         if style in ("indie-pop", "cinematic", "lofi-chill"):
-            if bar_energy < 0.02:
-                continue
-            arp_notes = upper_chord[:3]
-            eighth = beat_sec / 2
-            arp_pattern = (seed + bar) % 2
-            for step in range(8):
-                if random.random() > 0.85:
-                    continue
-                if arp_pattern == 0:
-                    midi_note = arp_notes[step % len(arp_notes)] + (12 if step>=4 else 0)
+            if is_silence_bar or is_intro and random.random() > 0.5:
+                pass
+            else:
+                arp_notes = upper_chord[:3]
+                beats_in_bar = [bt for bt in beat_times if bar_start_t <= bt < bar_end_t]
+                if len(beats_in_bar) >= 2:
+                    # 2 notes per beat
+                    for beat_idx, beat_t in enumerate(beats_in_bar):
+                        for sub in range(2):
+                            t = beat_t + sub * (bar_duration/len(beats_in_bar)/2)
+                            if random.random() > 0.85:
+                                continue
+                            midi_note = arp_notes[(beat_idx*2+sub) % len(arp_notes)] + (12 if beat_idx>=2 else 0)
+                            vel = 0.22 + bar_energy*0.2 + random.random()*0.08
+                            if is_intro:
+                                vel *= 0.5
+                            note = synth_chord([midi_note], sr, (bar_duration/len(beats_in_bar)/2)*0.85, velocity=vel, bright=True, variation=variation)
+                            s = int(t*sr)
+                            e = min(s+len(note), n_total)
+                            if 0 <= s < n_total:
+                                pan = 0.3 if (beat_idx*2+sub)%2==0 else -0.3
+                                mix_left[s:e] += note[:e-s] * (0.5 - pan*0.3)
+                                mix_right[s:e] += note[:e-s] * (0.5 + pan*0.3)
                 else:
-                    midi_note = arp_notes[-(step % len(arp_notes))] + (12 if step<4 else 0)
-                vel = 0.22 + bar_energy*0.2 + random.random()*0.08
-                note = synth_chord([midi_note], sr, eighth*0.85, velocity=vel, bright=True, variation=variation)
-                s = bar_start + int(step*eighth*sr)
-                e = min(s+len(note), n_total)
-                if s < n_total:
-                    pan = 0.3 if step%2==0 else -0.3
-                    mix_left[s:e] += note[:e-s] * (0.5 - pan*0.3)
-                    mix_right[s:e] += note[:e-s] * (0.5 + pan*0.3)
+                    eighth = bar_duration / 8
+                    for step in range(8):
+                        if random.random() > 0.85:
+                            continue
+                        midi_note = arp_notes[step % len(arp_notes)] + (12 if step>=4 else 0)
+                        vel = 0.22 + bar_energy*0.2 + random.random()*0.08
+                        note = synth_chord([midi_note], sr, eighth*0.85, velocity=vel, bright=True, variation=variation)
+                        s = bar_start + int(step*eighth*sr)
+                        e = min(s+len(note), n_total)
+                        if s < n_total:
+                            pan = 0.3 if step%2==0 else -0.3
+                            mix_left[s:e] += note[:e-s] * (0.5 - pan*0.3)
+                            mix_right[s:e] += note[:e-s] * (0.5 + pan*0.3)
 
-        for beat in range(4):
-            beat_start = bar_start + int(beat*beat_sec*sr)
-            kick_beats = [0,2]
+        # Drums: place on actual beat_times within bar
+        beats_in_bar = [bt for bt in beat_times if bar_start_t <= bt < bar_end_t]
+        if not beats_in_bar:
+            beats_in_bar = [bar_start_t + i*(bar_duration/4) for i in range(4)]
+
+        for b_idx, beat_t in enumerate(beats_in_bar):
+            beat_start = int(beat_t * sr)
+            # Kick pattern aligned to beats
+            kick_beats = [0]
             if drum_pattern_type == 0:
-                kick_beats = [0,1,2] if style=="indie-pop" else [0,2]
-                if bar % 2 == 1 and random.random() > 0.5:
+                kick_beats = [0,2] if len(beats_in_bar)==4 else [0]
+                if style=="indie-pop" and len(beats_in_bar)>2:
+                    kick_beats = [0,1,2]
+                if bar_idx % 2 == 1 and random.random() > 0.5 and len(beats_in_bar)>3:
                     kick_beats.append(3)
-            elif drum_pattern_type == 2:
+            elif drum_pattern_type == 1:
+                kick_beats = [0,2]
+            else:  # sparse
                 kick_beats = [0]
 
-            if beat in kick_beats:
-                if bar_energy > 0.1 or beat==0:
-                    s = bar_start + int(beat*beat_sec*sr)
-                    humanize = int((random.random()-0.5)*0.015*sr)
+            if b_idx in kick_beats:
+                if is_silence_bar:
+                    # Only kick on downbeat during silence
+                    if b_idx != 0:
+                        continue
+                if bar_energy > 0.08 or b_idx==0 or is_intro:
+                    s = beat_start
+                    humanize = int((random.random()-0.5)*0.008*sr)  # tiny humanize 8ms max for tight alignment
                     s = max(0, s+humanize)
                     e = min(s+len(kick), n_total)
                     if s < n_total:
-                        mix_left[s:e] += kick[:e-s] * (0.68 + bar_energy*0.2 + random.random()*0.1)
-                        mix_right[s:e] += kick[:e-s] * (0.68 + bar_energy*0.2 + random.random()*0.1)
+                        vel = 0.68 + bar_energy*0.2 + random.random()*0.1
+                        if is_intro:
+                            vel *= 0.7
+                        mix_left[s:e] += kick[:e-s] * vel
+                        mix_right[s:e] += kick[:e-s] * vel
 
-            if beat in (1,3):
-                if drum_pattern_type == 2 and beat==1 and random.random()>0.7:
+            # Snare on beats 1 and 3 (index 1,3)
+            if b_idx in (1,3):
+                if drum_pattern_type == 2 and b_idx==1 and random.random()>0.7:
                     continue
-                if bar_energy < 0.015 and beat==1:
+                if is_silence_bar and b_idx==1:
                     continue
                 s = beat_start
-                humanize = int((random.random()-0.5)*0.012*sr)
+                humanize = int((random.random()-0.5)*0.008*sr)
                 s = max(0, s+humanize)
                 e = min(s+len(snare), n_total)
                 if s < n_total:
                     vel = 0.52 + bar_energy*0.2 + random.random()*0.15
+                    if is_intro:
+                        vel *= 0.6
+                    if is_silence_bar:
+                        vel *= 0.3
                     mix_left[s:e] += snare[:e-s] * vel
                     mix_right[s:e] += snare[:e-s] * vel
 
-            hat_div = 2 if bpm < 90 else (2 if random.random()>0.3 else 4)
+            # Hats: 2 per beat for tight feel
+            hat_div = 2
             for hi in range(hat_div):
-                hs = beat_start + int(hi*beat_sec/hat_div*sr)
-                is_open = (beat==3 and hi==hat_div-1 and random.random()>0.3)
+                hs_t = beat_t + hi*(bar_duration/len(beats_in_bar)/hat_div)
+                hs = int(hs_t * sr)
+                is_open = (b_idx==len(beats_in_bar)-1 and hi==hat_div-1 and random.random()>0.3)
                 hat = hat_open if is_open else hat_closed
                 he = min(hs+len(hat), n_total)
                 if hs < n_total and random.random()>0.15:
                     hat_vel = 0.45 + bar_energy*0.1 + random.random()*0.15
+                    if is_silence_bar:
+                        hat_vel *= 0.4
+                    if is_intro:
+                        hat_vel *= 0.6
                     if bar_energy < 0.02:
                         hat_vel *= 0.5
                     mix_left[hs:he] += hat[:he-hs] * hat_vel
                     mix_right[hs:he] += hat[:he-hs] * hat_vel
+
+        # Onset accent: if vocal onset in this bar, add extra hat or soft kick for alignment feel
+        onsets_in_bar = [ot for ot in onset_times if bar_start_t <= ot < bar_end_t]
+        for ot in onsets_in_bar:
+            # Add subtle percussive accent 10ms before onset to lead the voice
+            accent_t = max(bar_start_t, ot - 0.01)
+            s = int(accent_t * sr)
+            e = min(s+len(hat_closed), n_total)
+            if s < n_total and not is_silence_bar:
+                mix_left[s:e] += hat_closed[:e-s] * 0.25
+                mix_right[s:e] += hat_closed[:e-s] * 0.25
 
     if style == "lofi-chill":
         a = 0.15
@@ -418,5 +556,5 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     stereo = np.stack([mix_left, mix_right], axis=1)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(out_path), stereo, sr)
-    print(f"[generator] Saved {out_path}, {total_duration:.1f}s, seed {seed}, per-bar F0 following, hash {file_hash}")
+    print(f"[generator] Saved {out_path}, {total_duration:.1f}s, {len(bar_times)} bars aligned to {len(beat_times)} beats, seed {seed}, hash {file_hash}")
     return out_path
