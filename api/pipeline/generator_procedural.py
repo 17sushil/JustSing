@@ -454,6 +454,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     onset_times = analysis.get("onset_times", [])
     first_vocal_time = analysis.get("first_vocal_time", 0.0)
     bar_times = analysis.get("bar_times", [])
+    phrases = analysis.get("phrases", [])  # v0.10: list of (start,end)
     
     try:
         seed = int(file_hash[:6], 16) % 10000
@@ -462,7 +463,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     
     np.random.seed(seed)
     random.seed(seed)
-    print(f"[generator] v0.9 STUDIO {style} {key_str} {bpm} BPM seed {seed} hash {file_hash} beats {len(beat_times)} bars {len(bar_times)} first_vocal {first_vocal_time:.2f}s")
+    print(f"[generator] v0.10 PHRASE-FOLLOWING STUDIO {style} {key_str} {bpm} BPM seed {seed} hash {file_hash} beats {len(beat_times)} bars {len(bar_times)} phrases {len(phrases)} first_vocal {first_vocal_time:.2f}s")
 
     try:
         root_name = key_str.split()[0]
@@ -551,9 +552,21 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     for bar_idx in range(num_bars):
         bar_start_t = bar_times[bar_idx]
         bar_end_t = bar_times[bar_idx+1] if bar_idx+1 < len(bar_times) else bar_start_t + (60.0/bpm*4)
+        # v0.10: If bar_start is near a phrase start, use phrase duration for chord
+        # This makes chords follow YOUR singing, not fixed grid
+        phrase_match = None
+        for ps, pe in phrases:
+            if abs(bar_start_t - ps) < 0.12:  # bar starts at phrase start
+                phrase_match = (ps, pe)
+                bar_end_t = pe  # chord lasts as long as phrase
+                break
         bar_duration = bar_end_t - bar_start_t
-        if bar_duration <= 0:
+        if bar_duration <= 0 or bar_duration > 8.0:
             bar_duration = 60.0/bpm*4
+        # Clamp phrase duration to max 4 sec for musicality
+        if phrase_match and bar_duration > 4.0:
+            bar_duration = 4.0
+            bar_end_t = bar_start_t + bar_duration
         bar_start = int(bar_start_t * sr)
         if bar_start >= n_total:
             break
@@ -562,7 +575,13 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
         bar_midi = midi_per_bar[bar_idx] if bar_idx < len(midi_per_bar) else 60
         
         is_intro = bar_start_t + bar_duration < first_vocal_time - 0.2
-        is_silence_bar = bar_energy < 0.015
+        # v0.10: Use phrases to determine silence, not just energy threshold
+        # If bar is inside any phrase, it's NOT silence even if energy low momentarily
+        inside_phrase = any(ps -0.1 <= bar_start_t <= pe +0.1 for ps, pe in phrases) if phrases else True
+        is_silence_bar = (bar_energy < 0.015) and not inside_phrase
+        # If bar is in gap between phrases, it's silence
+        if phrases and not inside_phrase:
+            is_silence_bar = True
 
         chord_info = chosen_chords_per_bar[bar_idx] if bar_idx < len(chosen_chords_per_bar) else diatonic_chords[0]
         chord_root = chord_info["root"]

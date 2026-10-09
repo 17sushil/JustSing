@@ -1,7 +1,7 @@
 """
-SingSmith Analysis v0.7 — TRUE alignment: beat tracking + onset detection + first vocal time
-Detects: BPM, Key, vocal range, duration, beat_times, onset_times, first_vocal_time, bar_times
-Now music can lock to vocal timing instead of fixed grid.
+SingSmith Analysis v0.10 — Phrase-following: chords change when YOU sing, not metronome
+Detects: BPM, Key, range, beat_times, onset_times, first_vocal_time, bar_times, phrases
+Phrases = non-silent intervals (where you actually sing) -> music follows those
 """
 
 import numpy as np
@@ -105,21 +105,6 @@ def detect_key(y, sr, f0_mean=180):
 
 def detect_f0_range(y, sr):
     try:
-        # Skip librosa.pyin — it can segfault on some systems with numba, use safe autocorr fallback
-        # pyin is more accurate but not required for alignment
-        pass
-        # try:
-        #     import librosa
-        #     f0, voiced_flag, _ = librosa.pyin(y, fmin=50, fmax=800, sr=sr, hop_length=1024)
-        #     f0 = f0[~np.isnan(f0)]
-        #     if len(f0) > 10:
-        #         f0_sorted = np.sort(f0)
-        #         lo = float(np.percentile(f0_sorted, 5))
-        #         hi = float(np.percentile(f0_sorted, 95))
-        #         mean = float(np.mean(f0_sorted))
-        #         return lo, hi, mean, f0_sorted
-        # except:
-        #     pass
         win = int(sr * 0.1)
         hop = int(sr * 0.05)
         f0s = []
@@ -149,61 +134,149 @@ def detect_f0_range(y, sr):
     except Exception as e:
         return 110.0, 330.0, 180.0, np.array([180.0])
 
-def detect_bpm_and_beats(y, sr, f0s=None):
+def detect_phrases(y, sr, hop=0.01):
     """
-    Returns tempo, beat_times, onset_times, first_vocal_time
-    Tries librosa first for true beat tracking, falls back to energy-based.
+    Detect vocal phrases (non-silent intervals) where you actually sing.
+    Returns list of (start, end) times.
+    """
+    try:
+        hop_samples = int(sr * hop)
+        envelope = np.array([np.mean(np.abs(y[i:i+hop_samples])) for i in range(0, len(y), hop_samples)])
+        times = np.arange(len(envelope)) * hop_samples / sr
+        
+        # Adaptive threshold
+        max_env = np.max(envelope)
+        thresh = max(max_env * 0.12, 0.025)  # at least 0.025
+        # Also use percentile
+        thresh = max(thresh, np.percentile(envelope, 70) * 0.5)
+        
+        # Find where above threshold
+        above = envelope > thresh
+        
+        phrases = []
+        in_phrase = False
+        phrase_start = 0
+        silence_counter = 0
+        min_phrase_len = 0.15  # at least 150ms singing
+        min_silence_len = 0.25  # at least 250ms silence to split phrases
+        
+        for i in range(len(above)):
+            if above[i]:
+                if not in_phrase:
+                    in_phrase = True
+                    phrase_start = times[i]
+                    silence_counter = 0
+                else:
+                    silence_counter = 0
+            else:
+                if in_phrase:
+                    silence_counter += 1
+                    # If silence long enough, end phrase
+                    if silence_counter * hop >= min_silence_len:
+                        phrase_end = times[i - silence_counter]
+                        if phrase_end - phrase_start >= min_phrase_len:
+                            phrases.append((float(phrase_start), float(phrase_end)))
+                        in_phrase = False
+                        silence_counter = 0
+        
+        # Handle last phrase
+        if in_phrase:
+            phrase_end = times[-1]
+            if phrase_end - phrase_start >= min_phrase_len:
+                phrases.append((float(phrase_start), float(phrase_end)))
+        
+        # Merge very close phrases (<0.15s gap)
+        merged = []
+        for s, e in phrases:
+            if merged and s - merged[-1][1] < 0.15:
+                merged[-1] = (merged[-1][0], e)
+            else:
+                merged.append((s, e))
+        
+        phrase_str = ", ".join([f"{s:.2f}-{e:.2f}s" for s,e in merged[:6]])
+        print(f"[phrases] Detected {len(merged)} phrases, thresh {thresh:.4f}, max_env {max_env:.4f}: {phrase_str}")
+        return merged
+    except Exception as e:
+        print(f"[phrases] failed {e}")
+        return []
+
+def detect_bpm_and_beats_and_phrases(y, sr, f0s=None):
+    """
+    Returns tempo, beat_times, onset_times, first_vocal_time, phrases
     """
     duration = len(y) / sr
     beat_times = []
     onset_times = []
     first_vocal_time = 0.0
     tempo = 90.0
+    phrases = []
 
-    # --- first vocal time via energy envelope ---
-    try:
-        hop = sr // 100  # 10ms
-        envelope = np.array([np.mean(np.abs(y[i:i+hop])) for i in range(0, len(y), hop)])
-        times = np.arange(len(envelope)) * hop / sr
-        # threshold: 5% of max, but at least 0.02
-        thresh = max(np.max(envelope) * 0.08, 0.02)
-        above = np.where(envelope > thresh)[0]
-        if len(above) > 0:
-            # first time where it stays above for 100ms (10 frames)
-            for idx in above:
-                if idx+10 < len(envelope) and np.all(envelope[idx:idx+10] > thresh*0.5):
-                    first_vocal_time = float(times[idx])
-                    break
-            else:
-                first_vocal_time = float(times[above[0]])
-        else:
+    # First detect phrases
+    phrases = detect_phrases(y, sr)
+
+    # First vocal time from phrases or energy
+    if phrases:
+        first_vocal_time = phrases[0][0]
+    else:
+        try:
+            hop = sr // 100
+            envelope = np.array([np.mean(np.abs(y[i:i+hop])) for i in range(0, len(y), hop)])
+            times = np.arange(len(envelope)) * hop / sr
+            thresh = max(np.max(envelope) * 0.08, 0.02)
+            above = np.where(envelope > thresh)[0]
+            if len(above) > 0:
+                for idx in above:
+                    if idx+10 < len(envelope) and np.all(envelope[idx:idx+10] > thresh*0.5):
+                        first_vocal_time = float(times[idx])
+                        break
+                else:
+                    first_vocal_time = float(times[above[0]])
+        except:
             first_vocal_time = 0.0
-    except:
-        first_vocal_time = 0.0
 
-    # --- Try librosa beat tracking (disabled by default due to segfault in some envs, enable with USE_LIBROSA=1) ---
-    librosa_ok = False
+    # Onset times from phrase starts + energy peaks
+    try:
+        # Phrase starts are strong onsets
+        onset_times = [s for s, e in phrases]
+        # Also add energy-based onsets inside phrases
+        hop = sr // 100
+        envelope = np.array([np.mean(np.abs(y[i:i+hop])) for i in range(0, len(y), hop)])
+        diff = np.diff(envelope)
+        thresh = np.std(envelope) * 0.6
+        onset_idx = np.where(diff > thresh)[0]
+        times = onset_idx * hop / sr
+        filtered = []
+        last = -1
+        for t in times:
+            if t - last > 0.25 and envelope[int(t*sr//hop)] > 0.03:
+                # Only if inside a phrase or near phrase
+                filtered.append(float(t))
+                last = t
+        # Merge with phrase starts, deduplicate
+        all_onsets = sorted(set(onset_times + filtered))
+        # Filter to be within phrases or close
+        onset_times = [t for t in all_onsets if t >= first_vocal_time - 0.1]
+        onset_times = onset_times[:100]
+    except:
+        onset_times = [s for s, e in phrases]
+
+    # BPM and beat_times
     import os
+    librosa_ok = False
     if os.getenv("USE_LIBROSA", "0") == "1":
         try:
             import librosa
             tempo_lib, beat_frames = librosa.beat.beat_track(y=y, sr=sr, units='frames')
             beat_times_lib = librosa.frames_to_time(beat_frames, sr=sr)
-            onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units='frames')
-            onset_times_lib = librosa.frames_to_time(onset_frames, sr=sr)
             if len(beat_times_lib) >= 4 and 45 < float(tempo_lib) < 200:
                 tempo = float(tempo_lib)
                 beat_times = [float(t) for t in beat_times_lib]
-                onset_times = [float(t) for t in onset_times_lib if t >= first_vocal_time - 0.1]
                 librosa_ok = True
-                print(f"[beats] librosa tempo {tempo:.1f} beats {len(beat_times)} onsets {len(onset_times)} first_vocal {first_vocal_time:.2f}s")
+                print(f"[beats] librosa tempo {tempo:.1f} beats {len(beat_times)}")
         except Exception as e:
-            print(f"[beats] librosa failed {e}, fallback")
-    else:
-        print("[beats] librosa disabled (USE_LIBROSA=0), using energy fallback for stability")
+            print(f"[beats] librosa failed {e}")
 
     if not librosa_ok:
-        # Fallback BPM detection via envelope autocorrelation
         try:
             hop = max(1, sr // 100)
             envelope = np.array([np.mean(np.abs(y[i:i+hop])) for i in range(0, len(y), hop)])
@@ -212,13 +285,10 @@ def detect_bpm_and_beats(y, sr, f0s=None):
             else:
                 env_smooth = np.convolve(envelope, np.ones(10)/10, mode='same')
                 env = env_smooth - np.mean(env_smooth)
-                std = np.std(env)
-                if std < 1e-6:
-                    std = 1e-6
                 sr_env = sr / hop
                 best_bpm = None
                 best_corr = -1
-                for bpm in range(50, 181):
+                for bpm in range(55, 176):
                     lag = int(sr_env * 60 / bpm)
                     if lag >= len(env) or lag < 3:
                         continue
@@ -236,7 +306,6 @@ def detect_bpm_and_beats(y, sr, f0s=None):
                 if best_bpm is not None:
                     tempo = float(best_bpm)
                 else:
-                    # F0 change rate fallback
                     if f0s is not None and len(f0s) > 10:
                         f0_arr = np.array(f0s)
                         diff = np.abs(np.diff(f0_arr))
@@ -247,7 +316,6 @@ def detect_bpm_and_beats(y, sr, f0s=None):
                     else:
                         h = hashlib.md5(y[:sr].tobytes()).hexdigest()
                         tempo = float(75 + (int(h[:2], 16) % 50))
-                # hash jitter
                 h = hashlib.md5(y[::sr//10][:100].tobytes()).hexdigest()
                 jitter = (int(h[:2], 16) % 7) - 3
                 tempo = float(np.clip(tempo + jitter, 55, 175))
@@ -259,55 +327,32 @@ def detect_bpm_and_beats(y, sr, f0s=None):
             except:
                 tempo = 90.0
 
-        # Generate synthetic beat_times from tempo and first_vocal_time
+        # Generate beat_times anchored to first vocal time and phrases
         try:
             beat_sec = 60.0 / tempo
-            # Start beats slightly before first vocal for intro, or at 0
-            start_beat = 0.0
-            if first_vocal_time > beat_sec * 1.5:
-                # Keep intro: first beat at 0
-                start_beat = 0.0
-            else:
-                # Vocal starts early, align first beat to first vocal or 0
-                start_beat = 0.0
-            num_beats = int(math.ceil(duration / beat_sec)) + 2
-            beat_times = [start_beat + i*beat_sec for i in range(num_beats)]
-            # Onset times via energy peaks
-            try:
-                hop = sr // 100
-                envelope = np.array([np.mean(np.abs(y[i:i+hop])) for i in range(0, len(y), hop)])
-                # Find peaks where envelope rises sharply
-                diff = np.diff(envelope)
-                thresh = np.std(envelope) * 0.5
-                onset_idx = np.where(diff > thresh)[0]
-                times = onset_idx * hop / sr
-                # Filter: at least 0.3s apart
-                filtered = []
-                last = -1
-                for t in times:
-                    if t - last > 0.25 and envelope[int(t*sr//hop)] > 0.03:
-                        filtered.append(float(t))
-                        last = t
-                onset_times = filtered[:100]
-            except:
-                onset_times = []
-            print(f"[beats] fallback tempo {tempo:.1f} beats {len(beat_times)} first_vocal {first_vocal_time:.2f}s")
+            # Start beats at 0, but ensure beats align to phrase starts
+            # If first vocal at 0.8s, we want beat near 0.8s
+            # Generate from 0
+            num_beats = int(math.ceil(duration / beat_sec)) + 4
+            beat_times = [i*beat_sec for i in range(num_beats)]
+            # If we have phrases, adjust beat_times to snap to phrase starts
+            # For each phrase start, find nearest beat and shift beats slightly to align?
+            # Simpler: keep beats as is, but also add phrase starts as extra beats for chord changes
+            # The generator will use bar_times from phrases, not just beats, for chords
+            print(f"[beats] fallback tempo {tempo:.1f} beats {len(beat_times)} phrases {len(phrases)} first_vocal {first_vocal_time:.2f}s")
         except Exception as e:
             print(f"[beats] fallback beat generation failed {e}")
             beat_times = [i*60.0/tempo for i in range(int(duration*tempo/60)+2)]
-            onset_times = []
 
-    # Ensure beat_times sorted and within duration
     beat_times = sorted([t for t in beat_times if 0 <= t <= duration + 2.0])
     onset_times = sorted([t for t in onset_times if 0 <= t <= duration])
 
-    # If beat_times empty, create from tempo
     if len(beat_times) < 4:
         beat_sec = 60.0 / tempo
         num_beats = int(math.ceil(duration / beat_sec)) + 4
         beat_times = [i*beat_sec for i in range(num_beats)]
 
-    return tempo, beat_times, onset_times, first_vocal_time
+    return tempo, beat_times, onset_times, first_vocal_time, phrases
 
 def analyze_audio(wav_path: Path):
     y, sr = sf.read(str(wav_path))
@@ -318,7 +363,7 @@ def analyze_audio(wav_path: Path):
     y_analyze = y[:int(min(len(y), sr*60))]
 
     f0_min, f0_max, f0_mean, f0_all = detect_f0_range(y_analyze, sr)
-    tempo, beat_times, onset_times, first_vocal_time = detect_bpm_and_beats(y_analyze, sr, f0s=f0_all)
+    tempo, beat_times, onset_times, first_vocal_time, phrases = detect_bpm_and_beats_and_phrases(y_analyze, sr, f0s=f0_all)
     key, key_conf, is_major = detect_key(y_analyze, sr, f0_mean=f0_mean)
 
     def hz_to_midi(hz):
@@ -344,24 +389,37 @@ def analyze_audio(wav_path: Path):
     except:
         file_hash = "unknown"
 
-    # Build bar_times from beat_times: every 4 beats = 1 bar
+    # Build bar_times: v0.10 uses phrases for chord changes, not just beats
+    # bar_times = phrase starts + regular bars
     bar_times = []
     try:
-        # Always start at 0 for intro
         bar_times.append(0.0)
-        # Then every 4 beats
+        # Add phrase starts as bar boundaries (so chords change when you sing)
+        for s, e in phrases:
+            if s > 0.1 and s not in bar_times:
+                bar_times.append(s)
+            # Also add phrase end as potential change
+            # if e < duration and e not in bar_times:
+            #    bar_times.append(e)
+        # Add regular beat-based bars
         for i in range(0, len(beat_times), 4):
             bt = beat_times[i]
             if bt > 0.05 and bt not in bar_times:
                 bar_times.append(bt)
-        # Extend beyond last beat to cover duration
+        # Extend beyond last
         beat_sec = 60.0 / tempo
         bar_sec = beat_sec * 4
-        last_bar = bar_times[-1] if bar_times else 0.0
+        last_bar = max(bar_times) if bar_times else 0.0
         while last_bar + bar_sec < duration + 1.0:
             last_bar += bar_sec
             bar_times.append(last_bar)
-        bar_times = sorted(set(bar_times))
+        bar_times = sorted(set([round(t,3) for t in bar_times]))
+        # Remove very close bars (<0.3s apart) - keep phrase starts
+        filtered_bars = [bar_times[0]]
+        for t in bar_times[1:]:
+            if t - filtered_bars[-1] >= 0.35 or any(abs(t - ps) < 0.05 for ps, pe in phrases):
+                filtered_bars.append(t)
+        bar_times = filtered_bars
     except:
         beat_sec = 60.0 / tempo
         bar_sec = beat_sec * 4
@@ -387,8 +445,9 @@ def analyze_audio(wav_path: Path):
         "onset_times": [round(float(t), 3) for t in onset_times],
         "first_vocal_time": round(float(first_vocal_time), 3),
         "bar_times": [round(float(t), 3) for t in bar_times],
+        "phrases": [(round(float(s),3), round(float(e),3)) for s,e in phrases],
     }
-    print(f"[analysis] {key} {tempo:.1f} BPM range {f0_min:.0f}-{f0_max:.0f}Hz mean {f0_mean:.0f}Hz hash {file_hash} beats {len(beat_times)} bars {len(bar_times)} first_vocal {first_vocal_time:.2f}s")
+    print(f"[analysis] {key} {tempo:.1f} BPM range {f0_min:.0f}-{f0_max:.0f}Hz mean {f0_mean:.0f}Hz hash {file_hash} beats {len(beat_times)} bars {len(bar_times)} phrases {len(phrases)} first_vocal {first_vocal_time:.2f}s")
     return result
 
 def key_to_root_midi(key_str: str) -> int:
