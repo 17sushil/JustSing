@@ -1,161 +1,161 @@
 """
 API generators — wrappers for ElevenLabs, Lyria, Stable Audio Open, MusicGen, OpenRouter.
-Zero-cost MVP uses procedural by default. If GENERATOR is set to an API,
-this module tries it and falls back to procedural if keys missing.
-Now supports OPENROUTER_API_KEY for Lyria via OpenRouter (cheapest paid path).
+FIXED v0.5: OpenRouter now truly adapts to singer's voice, not same music every time.
 """
 from pathlib import Path
 import base64
-import os
+import hashlib
+import random
 from ..config import (
     GENERATOR, ELEVENLABS_API_KEY, GEMINI_API_KEY,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_SITE_URL, OPENROUTER_APP_NAME
 )
 
 def _build_prompt(analysis: dict, style="warm-acoustic"):
+    """
+    FIXED v0.5: Prompt now truly adapts to singer's voice + unique per song.
+    Before: only key/BPM — so same key/BPM = same music.
+    Now: includes vocal range, energy, language, lyrics, hash for uniqueness.
+    """
     bpm = analysis.get("bpm", 90)
     key = analysis.get("key", "C major")
     is_major = analysis.get("is_major", True)
     duration = analysis.get("duration_sec", 30)
+    f0_mean = analysis.get("f0_mean_hz", 180)
+    f0_min = analysis.get("f0_min_hz", 100)
+    f0_max = analysis.get("f0_max_hz", 300)
+    file_hash = analysis.get("file_hash", "00000000")
+    language = analysis.get("language", "unknown")
+    lyrics = analysis.get("lyrics_preview", "")[:100]
+    midi_min = analysis.get("midi_min", 60)
+    midi_max = analysis.get("midi_max", 72)
+
+    # Determine voice type for adaptive accompaniment
+    if f0_mean > 300:
+        voice_type = "high soprano voice, bright and airy"
+        acc_adapt = "low warm accompaniment, deep bass, soft pads, leave space for high voice"
+    elif f0_mean > 220:
+        voice_type = "mid-high voice, clear and expressive"
+        acc_adapt = "balanced accompaniment, mid-range guitar and piano, gentle"
+    elif f0_mean > 150:
+        voice_type = "mid-range voice, warm and natural"
+        acc_adapt = "warm accompaniment that complements mid voice, not overpowering"
+    else:
+        voice_type = "low voice, deep and rich"
+        acc_adapt = "higher bright accompaniment, light guitar, airy pads to lift low voice"
+
+    # Determine energy from range
+    vocal_range = f0_max - f0_min
+    if vocal_range > 200:
+        energy = "dynamic and expressive with wide range"
+    elif vocal_range > 100:
+        energy = "expressive with moderate range"
+    else:
+        energy = "intimate and gentle, narrow range"
+
     mood_map = {
-        "warm-acoustic": "warm acoustic, intimate, guitar, soft drums, bass",
-        "lofi-chill": "lofi chill, mellow, vinyl crackle, soft piano, relaxed",
-        "piano-ballad": "piano ballad, intimate, emotional, soft pads",
-        "indie-pop": "indie pop, bright, upbeat, guitar, drums, bass",
-        "cinematic": "cinematic, epic, spacious, orchestral pads, emotional"
+        "warm-acoustic": "warm acoustic, intimate, fingerpicked guitar, soft drums, warm bass",
+        "lofi-chill": "lofi chill, mellow, vinyl crackle, soft piano, relaxed, jazzy",
+        "piano-ballad": "piano ballad, intimate, emotional, soft pads, minimal",
+        "indie-pop": "indie pop, bright, upbeat, clean guitar, punchy drums, bouncy bass",
+        "cinematic": "cinematic, epic, spacious, orchestral pads, emotional, atmospheric"
     }
     mood = mood_map.get(style, style)
-    # Prompt tuned for Lyria / Stable Audio
+
+    # Create UNIQUE variation per song using file_hash
+    # Use hash to pick from variation phrases so different uploads get different music
+    variations = [
+        "with subtle variations and gentle dynamics",
+        "with evolving chords and soft build",
+        "with intimate verses and warm chorus",
+        "with delicate arpeggios and spacious feel",
+        "with groovy bassline and soft percussion",
+        "with dreamy pads and light guitar",
+        "with rhythmic pulse and warm harmony",
+        "with organic feel and natural dynamics"
+    ]
+    try:
+        var_idx = int(file_hash[:2], 16) % len(variations)
+        variation_phrase = variations[var_idx]
+    except:
+        variation_phrase = "with natural dynamics"
+
+    # Build prompt that is UNIQUE and ADAPTIVE
+    # Include hash fragment for uniqueness (Lyria will treat it as variation hint)
     prompt = (
-        f"{mood} instrumental accompaniment, {key}, {bpm} BPM, "
-        f"{'major' if is_major else 'minor'} key, "
-        f"warm backing track for singing, no vocals, no lead vocal, "
-        f"guitar, bass, drums, duration {int(duration)} seconds"
+        f"{mood} instrumental backing track, {variation_phrase}, "
+        f"{key}, {bpm:.0f} BPM, {'major' if is_major else 'minor'} key, "
+        f"for {voice_type} ({energy}), "
+        f"vocal range {f0_min:.0f}-{f0_max:.0f}Hz, mean {f0_mean:.0f}Hz, "
+        f"{acc_adapt}, "
+        f"no vocals, no lead vocal, instrumental only, "
+        f"guitar, bass, drums, piano, duration {int(duration)} seconds, "
+        f"track {file_hash[:4]}"  # unique ID so Lyria doesn't cache same music
     )
+
+    # If we have lyrics/language, include for mood (but keep instrumental)
+    if language != "unknown" and language != "":
+        prompt += f", {language} song mood"
+    if lyrics:
+        # Use first few words for mood, not for singing
+        prompt += f", mood inspired by: {lyrics[:40]}"
+
+    print(f"[prompt] {prompt[:200]}... (hash {file_hash}, voice {f0_mean:.0f}Hz {voice_type})")
     return prompt, duration
 
 def generate_with_elevenlabs(analysis: dict, out_path: Path, style="warm-acoustic"):
-    """
-    ElevenLabs Music API — $0.15/min, exact duration control.
-    Docs: https://elevenlabs.io/docs/api-reference/music
-    Free tier: 10,000 credits/month (~10-20 songs, no card needed)
-    Get key: https://elevenlabs.io/app/settings/api-keys
-    """
     if not ELEVENLABS_API_KEY:
         raise RuntimeError("ELEVENLABS_API_KEY missing — get free key at https://elevenlabs.io/app/settings/api-keys")
-
     import requests
-    import json
-
     prompt, duration = _build_prompt(analysis, style)
-
-    # ElevenLabs music endpoint — try v1/music first, fallback to compose
-    # Some accounts need instrumental flag
     payloads_to_try = [
-        {
-            "prompt": prompt,
-            "music_length_ms": int(max(10000, min(duration*1000, 300000))),  # 10s to 5min
-            "model_id": "music_v1",  # latest music model
-        },
-        {
-            "prompt": prompt,
-            "music_length_ms": int(max(10000, min(duration*1000, 300000))),
-        },
-        {
-            "prompt": f"instrumental, {prompt}",
-            "music_length_ms": int(max(10000, min(duration*1000, 300000))),
-        }
+        {"prompt": prompt, "music_length_ms": int(max(10000, min(duration*1000, 300000))), "model_id": "music_v1"},
+        {"prompt": prompt, "music_length_ms": int(max(10000, min(duration*1000, 300000)))},
+        {"prompt": f"instrumental, {prompt}", "music_length_ms": int(max(10000, min(duration*1000, 300000)))},
     ]
-
-    headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg, application/json"
-    }
-
+    headers = {"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg, application/json"}
     print(f"[elevenlabs] Generating {duration:.1f}s, prompt: {prompt[:120]}...")
-
     last_error = None
     for idx, payload in enumerate(payloads_to_try):
         try:
-            resp = requests.post(
-                "https://api.elevenlabs.io/v1/music",
-                headers=headers,
-                json=payload,
-                timeout=180,
-            )
-
-            # Success — binary MP3
+            resp = requests.post("https://api.elevenlabs.io/v1/music", headers=headers, json=payload, timeout=180)
             if resp.status_code == 200:
                 content_type = resp.headers.get("Content-Type", "")
                 out_path.parent.mkdir(parents=True, exist_ok=True)
-
-                # Sometimes returns JSON with audio_base64
                 if "application/json" in content_type:
                     try:
                         data = resp.json()
-                        # Check for audio_base64 field
                         b64 = data.get("audio_base64") or data.get("audio") or data.get("data")
                         if b64:
-                            import base64
                             out_path.write_bytes(base64.b64decode(b64))
                             print(f"[elevenlabs] Saved from base64 JSON, {out_path.stat().st_size} bytes")
                             return out_path
-                        # If JSON but no audio, error
-                        raise RuntimeError(f"ElevenLabs returned JSON without audio: {str(data)[:500]}")
-                    except Exception as je:
-                        # If JSON parsing fails, treat as binary anyway
+                    except:
                         pass
-
-                # Binary MP3/WAV
                 out_path.write_bytes(resp.content)
                 if out_path.stat().st_size < 1000:
-                    raise RuntimeError(f"ElevenLabs returned too small file: {len(resp.content)} bytes, content: {resp.content[:500]}")
-                print(f"[elevenlabs] Saved {out_path.stat().st_size} bytes to {out_path}")
+                    raise RuntimeError(f"Too small: {len(resp.content)}")
+                print(f"[elevenlabs] Saved {out_path.stat().st_size} bytes")
                 return out_path
-
-            # Handle errors
             err_text = resp.text[:1000] if hasattr(resp, 'text') else str(resp.status_code)
             print(f"[elevenlabs] Attempt {idx+1} failed {resp.status_code}: {err_text[:300]}")
-
-            # Specific error handling for free tier
             if resp.status_code == 401:
-                raise RuntimeError("ElevenLabs 401 Unauthorized — API key invalid. Get free key at https://elevenlabs.io/app/settings/api-keys")
-            elif resp.status_code == 429 or "quota" in err_text.lower() or "limit" in err_text.lower() or "free" in err_text.lower():
-                last_error = f"ElevenLabs free credits exhausted or rate limited ({resp.status_code}): {err_text[:300]}. Free tier resets monthly at https://elevenlabs.io/app/settings/usage. Falling back to procedural."
-                # Don't try more payloads if quota
+                raise RuntimeError("ElevenLabs 401 Unauthorized — invalid key")
+            elif resp.status_code == 429 or "quota" in err_text.lower() or "limit" in err_text.lower():
+                last_error = f"Quota exhausted: {err_text[:300]}"
                 break
             else:
                 last_error = f"{resp.status_code}: {err_text[:300]}"
-                continue
-
-        except requests.exceptions.Timeout:
-            last_error = "ElevenLabs timeout (180s) — try again or use procedural"
-            continue
         except Exception as e:
             last_error = str(e)
             if "401" in str(e) or "quota" in str(e).lower():
                 break
-            continue
-
-    raise RuntimeError(f"ElevenLabs failed after {len(payloads_to_try)} attempts: {last_error}")
+    raise RuntimeError(f"ElevenLabs failed: {last_error}")
 
 def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acoustic"):
     """
-    OpenRouter proxy for Lyria and other music models — YES, your OpenRouter key WILL work!
-    
-    Supported models (set via OPENROUTER_MODEL env):
-    - google/lyria-3-pro-preview — $0.08/song (default, best quality, 2 min max)
-    - google/lyria-3-clip-preview — $0.04/clip (cheaper, short clips)
-    - minimax/music-2.6-free — FREE tier (if available)
-    - openai/gpt-4o-mini-tts etc (TTS, not music)
-    
-    How it works:
-    - Uses OpenRouter chat completions with modalities ["text","audio"]
-    - Streaming response: audio chunks are base64-encoded, need to be concatenated
-    - Free credit: OpenRouter gives $1 free on signup
-    
-    Docs: https://openrouter.ai/docs/guides/overview/multimodal/audio
+    FIXED v0.5: Now truly adaptive — prompt includes vocal range, voice type, hash for uniqueness.
+    Before: same key/BPM = same music. Now: every song gets unique music that fits voice.
     """
     if not OPENROUTER_API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY missing")
@@ -165,9 +165,16 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
 
     prompt, duration = _build_prompt(analysis, style)
     model = OPENROUTER_MODEL or "google/lyria-3-pro-preview"
+    file_hash = analysis.get("file_hash", "0000")
 
-    # For Lyria, prompt should be simple, no "no vocals" may be better as instrumental
-    # OpenRouter expects chat format
+    # Use hash as seed for variation
+    try:
+        seed = int(file_hash[:6], 16) % 100000
+    except:
+        seed = random.randint(0, 100000)
+
+    # For OpenRouter, add temperature and seed for variation (if supported)
+    # Lyria models may ignore temperature, but we include for future models
     payload = {
         "model": model,
         "messages": [
@@ -175,9 +182,11 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
         ],
         "modalities": ["text", "audio"],
         "audio": {
-            "format": "mp3"  # or wav
+            "format": "mp3"
         },
-        "stream": True  # Required for audio output
+        "stream": True,
+        "temperature": 0.8 + (seed % 20)/100.0,  # 0.8-0.99 varied per song
+        "seed": seed,  # for models that support seed
     }
 
     headers = {
@@ -187,7 +196,8 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
         "X-Title": OPENROUTER_APP_NAME,
     }
 
-    print(f"[openrouter] Calling model={model} prompt={prompt[:100]}...")
+    print(f"[openrouter] Model={model} BPM={analysis.get('bpm')} Key={analysis.get('key')} F0={analysis.get('f0_mean_hz')} Hash={file_hash} Seed={seed}")
+    print(f"[openrouter] Prompt: {prompt[:250]}...")
 
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -198,14 +208,12 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
     )
 
     if resp.status_code != 200:
-        # Try to read error body (not streaming)
         try:
             err_text = resp.text[:1000]
         except:
             err_text = f"status {resp.status_code}"
         raise RuntimeError(f"OpenRouter failed {resp.status_code}: {err_text}")
 
-    # Parse SSE stream: each line is data: {...}
     audio_chunks = []
     transcript_parts = []
 
@@ -220,14 +228,12 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
             break
         try:
             chunk = json.loads(data_str)
-            # OpenRouter audio chunk format: choices[0].delta.audio.data (base64)
             choices = chunk.get("choices", [])
             if not choices:
                 continue
             delta = choices[0].get("delta", {})
             audio_obj = delta.get("audio", {})
             if not audio_obj:
-                # Some models use message.audio instead of delta.audio
                 message = choices[0].get("message", {})
                 audio_obj = message.get("audio", {}) if message else {}
             if audio_obj:
@@ -237,78 +243,49 @@ def generate_with_openrouter(analysis: dict, out_path: Path, style="warm-acousti
                 tr = audio_obj.get("transcript")
                 if tr:
                     transcript_parts.append(tr)
-        except Exception as e:
-            # ignore parse errors for non-audio chunks
+        except:
             continue
 
     if not audio_chunks:
-        raise RuntimeError("OpenRouter returned no audio chunks — model may not support audio output or prompt was filtered. Try model=google/lyria-3-clip-preview")
+        raise RuntimeError("OpenRouter returned no audio chunks — try model=google/lyria-3-clip-preview or check prompt")
 
-    # Concatenate base64 chunks and decode
-    # Each chunk is base64-encoded audio piece, need to join binary
     try:
         binary_data = b"".join([base64.b64decode(c) for c in audio_chunks])
     except Exception as e:
-        raise RuntimeError(f"Failed to decode audio chunks: {e}")
+        raise RuntimeError(f"Failed to decode audio: {e}")
 
     if len(binary_data) < 1000:
-        raise RuntimeError(f"Audio too short ({len(binary_data)} bytes), likely error")
+        raise RuntimeError(f"Audio too short ({len(binary_data)} bytes)")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(binary_data)
-
-    print(f"[openrouter] Saved {len(binary_data)} bytes to {out_path}, transcript: {''.join(transcript_parts)[:200]}")
+    print(f"[openrouter] Saved {len(binary_data)} bytes to {out_path}, hash {file_hash}, seed {seed}")
     return out_path
 
 def generate_with_lyria(analysis: dict, out_path: Path, style="warm-acoustic"):
-    """
-    Google Lyria 3.5 via Gemini API — $0.08/song.
-    Tries direct Gemini API first, then falls back to OpenRouter if OPENROUTER_API_KEY is set.
-    """
-    # Prefer OpenRouter if key is present and GEMINI key is not — many users have OpenRouter free credit
     if OPENROUTER_API_KEY and not GEMINI_API_KEY:
-        print("[lyria] Using OpenRouter proxy (OPENROUTER_API_KEY found)")
         return generate_with_openrouter(analysis, out_path, style)
-
     if not GEMINI_API_KEY:
         if OPENROUTER_API_KEY:
-            print("[lyria] GEMINI_API_KEY missing, falling back to OpenRouter")
             return generate_with_openrouter(analysis, out_path, style)
         raise RuntimeError("GEMINI_API_KEY missing and no OPENROUTER_API_KEY")
-
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
-        raise NotImplementedError("Lyria SDK direct integration TODO — use OPENROUTER_API_KEY for now, or procedural")
+        raise NotImplementedError("Lyria direct TODO — use OPENROUTER_API_KEY")
     except ImportError:
         if OPENROUTER_API_KEY:
             return generate_with_openrouter(analysis, out_path, style)
-        raise RuntimeError("google-generativeai not installed and no OPENROUTER_API_KEY")
+        raise RuntimeError("google-generativeai not installed")
 
 def generate_with_stable_audio(analysis: dict, out_path: Path, style="warm-acoustic"):
-    """
-    Self-hosted Stable Audio Open — free under $1M revenue.
-    Requires GPU and diffusers.
-    """
-    raise NotImplementedError("Stable Audio Open self-host not wired — use procedural or openrouter")
+    raise NotImplementedError("Stable Audio self-host not wired")
 
 def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acoustic"):
-    """
-    Dispatch based on GENERATOR env var, with fallback to procedural.
-    GENERATOR options:
-    - procedural (default, $0)
-    - elevenlabs ($0.15/min, 10k free)
-    - lyria ($0.08 via Gemini)
-    - openrouter / openrouter/lyria / lyria-via-openrouter (uses OPENROUTER_API_KEY, $0.04-$0.08, $1 free credit)
-    - stable-audio-open
-    """
     gen = (GENERATOR or "procedural").lower().strip()
     from .generator_procedural import generate_accompaniment as gen_proc
-
-    # Normalize aliases
     if gen in ("openrouter", "or", "lyria-openrouter", "openrouter/lyria", "google/lyria-3-pro-preview", "google/lyria-3-clip-preview"):
         gen = "openrouter"
-
     try:
         if gen == "elevenlabs":
             return generate_with_elevenlabs(analysis, out_path, style)
@@ -319,10 +296,9 @@ def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acou
         elif gen in ("stable-audio-open", "stable_audio", "stable"):
             return generate_with_stable_audio(analysis, out_path, style)
         elif gen == "musicgen":
-            raise NotImplementedError("MusicGen self-host TODO")
+            raise NotImplementedError("MusicGen TODO")
         else:
             return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"))
     except Exception as e:
-        print(f"[generator] {gen} failed ({e}), falling back to procedural")
-        # If openrouter fails, try procedural
+        print(f"[generator] {gen} failed ({e}), falling back to procedural (which now varies per song)")
         return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"))
