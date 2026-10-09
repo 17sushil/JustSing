@@ -234,6 +234,15 @@ def detect_bpm_and_beats_and_phrases(y, sr, f0s=None):
         except:
             first_vocal_time = 0.0
 
+    # Fix librosa 1.0+ returns array for tempo
+    def _to_float_tempo(t):
+        try:
+            if isinstance(t, np.ndarray):
+                return float(t.flat[0]) if t.size>0 else 90.0
+            return float(t)
+        except:
+            return 90.0
+
     # Onset times from phrase starts + energy peaks
     try:
         # Phrase starts are strong onsets
@@ -267,6 +276,7 @@ def detect_bpm_and_beats_and_phrases(y, sr, f0s=None):
         try:
             import librosa
             tempo_lib, beat_frames = librosa.beat.beat_track(y=y, sr=sr, units='frames')
+            tempo_lib = _to_float_tempo(tempo_lib)
             beat_times_lib = librosa.frames_to_time(beat_frames, sr=sr)
             if len(beat_times_lib) >= 4 and 45 < float(tempo_lib) < 200:
                 tempo = float(tempo_lib)

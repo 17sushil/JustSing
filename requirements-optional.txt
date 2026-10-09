@@ -4,10 +4,18 @@ faster-whisper
 
 # Optional: Mureka-level quality — MusicGen Melody (melody-guided, follows your voice)
 # Zero-cost, self-hosted, no API key, but needs torch + 1-4GB download
-# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-# pip install audiocraft
-# Then: GENERATOR=musicgen-melody
+# For Python 3.14 (your version): use transformers (works, no spacy/blis)
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#   pip install transformers scipy
+#   GENERATOR=musicgen-small  (real instruments, text-only, works on 3.14)
+# For Python 3.11 with melody following (best, like Mureka Remix):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#   pip install audiocraft
+#   GENERATOR=musicgen-melody  (follows YOUR melody via chroma)
 torch
 torchaudio
+transformers
+scipy
 audiocraft
+sentencepiece
 

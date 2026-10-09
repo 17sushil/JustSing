@@ -419,12 +419,19 @@ def choose_chord_for_vocal_note(vocal_midi, vocal_pc, diatonic_chords, expected_
             else:
                 score += 1
         else:
+            # Chromatic handling: find closest chord tone distance
             root_pc = chord["root"] % 12
             vocal_interval = (vocal_pc - root_pc) % 12
-            if vocal_interval in (1,2,5,9):
-                score += 0.5
+            # Distance to nearest chord pc
+            min_dist = min((vocal_pc - pc) % 12 for pc in pcs)
+            min_dist = min(min_dist, 12-min_dist)  # circular distance
+            # If chromatic approach (1 semitone away), allow as passing tone
+            if min_dist == 1:
+                score += 1.5  # chromatic approach, okay
+            elif min_dist == 2:
+                score += 0.3  # whole step away, tension
             else:
-                score -= 5
+                score -= 1.5  # was -5, too harsh, now -1.5 for far notes
 
         if expected_degree is not None and chord["degree"] == expected_degree:
             score += 4
