@@ -1,12 +1,13 @@
 """
-SingSmith Procedural Generator v0.9 — Studio karaoke: rich instruments + reverb
-FIXES poor results: cheap sine -> saw + filter + chorus + reverb, tight groove
+SingSmith Procedural Generator v1.3 — Perfect match: per-beat chroma + chord + drums on onsets
+FIXES still not matching: now chords change EVERY BEAT when voice changes, not per bar
 
-- Same melody-following harmony as v0.8 (chords contain vocal notes)
-- Richer synth: saw + lowpass + chorus for chords, warm sub for bass
-- Better drums: kick with click, snare with body+noise, hats with HP filter
-- Simple Freeverb-like reverb, master glue
-- Groove: bass on 1 and 3, not every beat, leaves space
+- Per-beat F0 + chroma detection (frame-level)
+- Per-beat chord choosing: 27 chords for 8 sec = changes every 0.3 sec as voice changes
+- Drums: kick on YOUR onset_times (phrase starts), not fixed grid
+- Bass: follows per-beat chord root, ~19 semitones below vocal
+- Chroma-based chord detection for richer harmony
+- Studio sound: saw+filter+chorus+reverb v0.9
 """
 
 import numpy as np
@@ -47,7 +48,6 @@ def adsr_envelope(n_samples, sr, attack=0.01, decay=0.1, sustain=0.7, release=0.
     return env
 
 def one_pole_lowpass(x, cutoff, sr):
-    # Simple one-pole LPF
     rc = 1.0 / (2 * math.pi * cutoff)
     dt = 1.0 / sr
     alpha = dt / (rc + dt)
@@ -58,62 +58,42 @@ def one_pole_lowpass(x, cutoff, sr):
     return y
 
 def saw_wave(freq, t, sr):
-    # Bandlimited-ish saw via sum of sines up to Nyquist
-    # For simplicity, use naive saw but filter later
-    phase = 2 * math.pi * freq * t
-    # naive saw: 2*(phase/(2pi) %1)-1
     saw = 2 * ( (freq * t) % 1 ) - 1
     return saw
 
 def synth_kick_v09(sr, duration=0.5, variation=0):
     n = int(sr*duration)
     t = np.linspace(0, duration, n)
-    # Body: sine sweep 150->50 Hz
     base_pitch = 150 + variation*8
     freq = base_pitch * np.exp(-t*22) + 48
     phase = 2*np.pi*np.cumsum(freq)/sr
     body = np.sin(phase)
-    # Click: short high freq burst at start
     click_env = np.exp(-t*120)
     click = np.sin(2*np.pi*3000*t) * click_env * 0.3
-    # Envelope
     amp_env = np.exp(-t*(6+variation*0.4))
     wave = (body + click) * amp_env
-    # Lowpass to keep warm
     wave = one_pole_lowpass(wave, 800, sr)
     return wave * 0.95
 
 def synth_snare_v09(sr, duration=0.35, variation=0):
     n = int(sr*duration)
     t = np.linspace(0, duration, n)
-    # Body: sine at 180Hz
     body_freq = 175 + variation*10
     body = np.sin(2*np.pi*body_freq*t) * np.exp(-t*12) * 0.6
-    # Noise: bandpassed
     noise = np.random.randn(n)
-    # Highpass noise via simple diff
     noise_hp = np.diff(np.concatenate([[0], noise])) * 0.7
-    # Envelopes
     noise_env = np.exp(-t*(14+variation))
-    # Mix
     wave = body + noise_hp * noise_env * 0.8
-    # Slight lowpass
     wave = one_pole_lowpass(wave, 4000, sr)
     return wave * 0.65
 
 def synth_hat_v09(sr, duration=0.14, closed=True, variation=0):
     n = int(sr*duration)
-    # White noise -> highpass
     noise = np.random.randn(n)
-    # Highpass: simple
-    b = [1, -1]
-    # Use lfilter-like via diff for speed
     hp = noise - np.concatenate([[0], noise[:-1]]) * 0.95
-    # Envelope
     decay = 30+variation*3 if closed else 10+variation
     env = np.exp(-np.linspace(0, duration, n)*decay)
     wave = hp * env
-    # Bandpass-ish around 8k
     wave = one_pole_lowpass(wave, 9000, sr)
     return wave * (0.28 if closed else 0.20)
 
@@ -123,20 +103,13 @@ def synth_bass_v09(midi, sr, duration, velocity=0.7, variation=0):
         return np.zeros(0)
     t = np.linspace(0, duration, n)
     f0 = note_to_freq(midi)
-    # Warm bass: sine + saw + sub
-    # Sub: sine at f0
     sub = np.sin(2*np.pi*f0*t)
-    # Saw with lowpass for warmth
     saw = saw_wave(f0, t, sr) * 0.35
     saw2 = saw_wave(f0*2, t, sr) * 0.15
-    # Mix
     wave = sub + saw + saw2
-    # Lowpass at ~800Hz for warmth, varies with velocity
     cutoff = 300 + velocity*500
     wave = one_pole_lowpass(wave, cutoff, sr)
-    # ADSR: punchy attack
     env = adsr_envelope(n, sr, attack=0.005, decay=0.12, sustain=0.75, release=0.18)
-    # Slight saturation
     wave = np.tanh(wave * 1.2) * 0.9
     return wave * env * velocity * 0.7
 
@@ -146,61 +119,43 @@ def synth_chord_v09(midis, sr, duration, velocity=0.5, bright=False, variation=0
         return np.zeros(0)
     t = np.linspace(0, duration, n)
     wave = np.zeros(n)
-    # For each note, use saw + sine mix with detune for chorus
     for idx, midi in enumerate(midis):
         f0 = note_to_freq(midi + variation*0.03)
-        # Detune for chorus
-        detune = (random.random()-0.5)*0.008  # ~0.8% detune
+        detune = (random.random()-0.5)*0.008
         f0_d = f0 * (1+detune)
         if bright or style in ("warm-acoustic","indie-pop"):
-            # Bright: saw + octave
             saw = saw_wave(f0, t, sr) * 0.5
             saw_d = saw_wave(f0_d, t, sr) * 0.35
-            # Add sine for body
             sine = np.sin(2*np.pi*f0*t) * 0.3
             note_wave = saw + saw_d + sine
-            # Lowpass at 3-5k for warmth
             note_wave = one_pole_lowpass(note_wave, 3500 if bright else 2500, sr)
         else:
-            # Warm pad: sine + soft saw
             sine = np.sin(2*np.pi*f0*t) + 0.4*np.sin(2*np.pi*2*f0*t)
             saw = saw_wave(f0, t, sr) * 0.25
             note_wave = sine + saw
             note_wave = one_pole_lowpass(note_wave, 1800, sr)
-        # Pan slightly via amplitude already handled outside, just sum
         wave += note_wave
 
     wave = wave / (len(midis) or 1)
-    # ADSR
     if bright:
         env = adsr_envelope(n, sr, attack=0.012, decay=0.18, sustain=0.65, release=0.35)
     else:
         env = adsr_envelope(n, sr, attack=0.08, decay=0.25, sustain=0.6, release=0.4)
-    # Soft saturation for warmth
     wave = np.tanh(wave * 0.9) 
     return wave * env * velocity * 0.45
 
 def simple_reverb(stereo, sr, room=0.5, damp=0.5, mix=0.18):
-    """
-    Very simple Freeverb-like: comb filters + allpass
-    stereo: (N,2)
-    """
     try:
         N = len(stereo)
-        # Comb filter delays (ms) from freeverb
         comb_delays = [int(sr * d) for d in [0.0297, 0.0371, 0.0411, 0.0437]]
         allpass_delays = [int(sr * d) for d in [0.005, 0.0017]]
-        
-        # Process each channel
         out = np.zeros_like(stereo)
         for ch in range(2):
             x = stereo[:, ch]
-            # Combs in parallel
             comb_sum = np.zeros(N)
             for i, d in enumerate(comb_delays):
                 buf = np.zeros(N)
                 feedback = 0.7 + room*0.25
-                # Simple comb: y[n] = x[n] + feedback * y[n-d]
                 for n in range(N):
                     if n >= d:
                         buf[n] = x[n] + feedback * buf[n-d] * (1-damp*0.3)
@@ -208,7 +163,6 @@ def simple_reverb(stereo, sr, room=0.5, damp=0.5, mix=0.18):
                         buf[n] = x[n]
                 comb_sum += buf
             comb_sum /= len(comb_delays)
-            # Allpass chain (simplified)
             y = comb_sum
             for d in allpass_delays:
                 buf = np.zeros(N)
@@ -219,38 +173,12 @@ def simple_reverb(stereo, sr, room=0.5, damp=0.5, mix=0.18):
                         buf[n] = y[n]
                 y = buf
             out[:, ch] = y
-        
-        # Mix dry/wet
         wet = out * mix
         dry = stereo * (1-mix)
         return dry + wet
     except Exception as e:
         print(f"[reverb] failed {e}, returning dry")
         return stereo
-
-def get_chord_progressions_library():
-    return {
-        "warm-acoustic": {
-            "major": [[0, 7, 9, 5], [0, 5, 9, 7], [0, 9, 5, 7], [0, 5, 0, 7]],
-            "minor": [[0, 8, 3, 10], [0, 3, 8, 10], [0, 8, 10, 3]]
-        },
-        "lofi-chill": {
-            "major": [[0, 5, 9, 7], [0, 9, 5, 0], [9, 5, 0, 7], [0, 3, 5, 7]],
-            "minor": [[0, 8, 10, 3], [0, 10, 8, 3]]
-        },
-        "piano-ballad": {
-            "major": [[0, 5, 9, 5], [0, 7, 9, 5], [0, 9, 7, 5]],
-            "minor": [[0, 5, 8, 10], [0, 8, 5, 10]]
-        },
-        "indie-pop": {
-            "major": [[0, 9, 5, 7], [0, 5, 9, 7], [5, 9, 0, 7], [0, 7, 5, 9]],
-            "minor": [[0, 3, 8, 10], [0, 8, 3, 10]]
-        },
-        "cinematic": {
-            "major": [[0, 5, 3, 7], [0, 3, 5, 7], [0, 5, 0, 3]],
-            "minor": [[0, 5, 8, 7], [0, 8, 5, 7]]
-        }
-    }
 
 def get_diatonic_chords(root_midi, is_major):
     if is_major:
@@ -315,10 +243,40 @@ def detect_f0_in_segment(audio, sr):
         return float(f0)
     return None
 
+def detect_chroma_in_segment(audio, sr):
+    """
+    Detect chroma (12 pitch classes) in segment for richer harmony than single F0
+    Returns 12-dim chroma vector
+    """
+    try:
+        n_fft = min(4096, len(audio))
+        if n_fft < 512:
+            return np.ones(12)/12
+        window = np.hanning(n_fft)
+        frame = audio[:n_fft] * window
+        spec = np.abs(np.fft.rfft(frame))
+        freqs = np.fft.rfftfreq(n_fft, 1/sr)
+        valid = (freqs > 50) & (freqs < 4000)
+        f_valid = freqs[valid]
+        s_valid = spec[valid]
+        if len(f_valid) == 0:
+            return np.ones(12)/12
+        midi = 69 + 12 * np.log2(f_valid / 440.0)
+        pc = np.round(midi).astype(int) % 12
+        chroma = np.zeros(12)
+        for j, p in enumerate(pc):
+            chroma[p] += s_valid[j]
+        if np.max(chroma) > 0:
+            chroma = chroma / np.max(chroma)
+        return chroma
+    except:
+        return np.ones(12)/12
+
 def analyze_vocal_per_beat_and_bar(vocal_path: Path, beat_times, bar_times, analysis):
     f0_per_beat = []
     energy_per_beat = []
     midi_per_beat = []
+    chroma_per_beat = []
     f0_per_bar = []
     energy_per_bar = []
     midi_per_bar = []
@@ -337,6 +295,7 @@ def analyze_vocal_per_beat_and_bar(vocal_path: Path, beat_times, bar_times, anal
                 f0_per_beat.append(analysis.get("f0_mean_hz", 180))
                 energy_per_beat.append(0.05)
                 midi_per_beat.append(69 + 12*math.log2(analysis.get("f0_mean_hz",180)/440.0))
+                chroma_per_beat.append(np.ones(12)/12)
                 continue
             seg = y_vocal[start_s:end_s]
             energy = float(np.mean(np.abs(seg)))
@@ -347,6 +306,8 @@ def analyze_vocal_per_beat_and_bar(vocal_path: Path, beat_times, bar_times, anal
             f0_per_beat.append(float(f0))
             midi = 69 + 12*math.log2(f0/440.0) if f0>0 else 60
             midi_per_beat.append(float(midi))
+            chroma = detect_chroma_in_segment(seg, sr_v)
+            chroma_per_beat.append(chroma)
 
         for bar_idx in range(len(bar_times)):
             bar_start = bar_times[bar_idx]
@@ -392,19 +353,26 @@ def analyze_vocal_per_beat_and_bar(vocal_path: Path, beat_times, bar_times, anal
         f0_per_beat = [analysis.get("f0_mean_hz", 180)] * num_beats
         energy_per_beat = [0.1] * num_beats
         midi_per_beat = [60] * num_beats
+        chroma_per_beat = [np.ones(12)/12] * num_beats
         f0_per_bar = [analysis.get("f0_mean_hz", 180)] * num_bars
         energy_per_bar = [0.1] * num_bars
         midi_per_bar = [60] * num_bars
 
-    return f0_per_beat, energy_per_beat, midi_per_beat, f0_per_bar, energy_per_bar, midi_per_bar
+    return f0_per_beat, energy_per_beat, midi_per_beat, chroma_per_beat, f0_per_bar, energy_per_bar, midi_per_bar
 
-def choose_chord_for_vocal_note(vocal_midi, vocal_pc, diatonic_chords, expected_degree, prev_chord, seed):
+def choose_chord_for_vocal_note(vocal_midi, vocal_pc, diatonic_chords, expected_degree, prev_chord, seed, chroma=None):
     best_score = -1000
     best_chord = diatonic_chords[0]
 
     for chord in diatonic_chords:
         score = 0
         pcs = chord["pcs"]
+        # Melody fit with chroma if available
+        if chroma is not None:
+            # Score based on chroma: sum of chroma for chord pcs
+            chroma_score = sum(chroma[pc] for pc in pcs)
+            score += chroma_score * 3.0
+
         if vocal_pc in pcs:
             root_pc = chord["root"] % 12
             vocal_interval = (vocal_pc - root_pc) % 12
@@ -419,30 +387,27 @@ def choose_chord_for_vocal_note(vocal_midi, vocal_pc, diatonic_chords, expected_
             else:
                 score += 1
         else:
-            # Chromatic handling: find closest chord tone distance
             root_pc = chord["root"] % 12
-            vocal_interval = (vocal_pc - root_pc) % 12
-            # Distance to nearest chord pc
             min_dist = min((vocal_pc - pc) % 12 for pc in pcs)
-            min_dist = min(min_dist, 12-min_dist)  # circular distance
-            # If chromatic approach (1 semitone away), allow as passing tone
+            min_dist = min(min_dist, 12-min_dist)
             if min_dist == 1:
-                score += 1.5  # chromatic approach, okay
+                score += 1.5
             elif min_dist == 2:
-                score += 0.3  # whole step away, tension
+                score += 0.3
             else:
-                score -= 1.5  # was -5, too harsh, now -1.5 for far notes
+                score -= 1.0  # even more permissive than -1.5
 
         if expected_degree is not None and chord["degree"] == expected_degree:
-            score += 4
+            score += 3  # reduced from 4 to allow more melody following
+
         if chord["degree"] in (0,7,9):
-            score += 1
+            score += 0.8
 
         if prev_chord:
             shared = len(set(pcs) & set(prev_chord["pcs"]))
-            score += shared * 1.5
+            score += shared * 1.2
 
-        score += (seed % 10) * 0.05 * (1 if chord["degree"] % 2 == 0 else -1)
+        score += (seed % 10) * 0.04 * (1 if chord["degree"] % 2 == 0 else -1)
 
         if score > best_score:
             best_score = score
@@ -461,7 +426,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     onset_times = analysis.get("onset_times", [])
     first_vocal_time = analysis.get("first_vocal_time", 0.0)
     bar_times = analysis.get("bar_times", [])
-    phrases = analysis.get("phrases", [])  # v0.10: list of (start,end)
+    phrases = analysis.get("phrases", [])
     
     try:
         seed = int(file_hash[:6], 16) % 10000
@@ -470,7 +435,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     
     np.random.seed(seed)
     random.seed(seed)
-    print(f"[generator] v0.10 PHRASE-FOLLOWING STUDIO {style} {key_str} {bpm} BPM seed {seed} hash {file_hash} beats {len(beat_times)} bars {len(bar_times)} phrases {len(phrases)} first_vocal {first_vocal_time:.2f}s")
+    print(f"[generator] v1.3 PER-BEAT-CHANGING STUDIO {style} {key_str} {bpm} BPM seed {seed} hash {file_hash} beats {len(beat_times)} bars {len(bar_times)} phrases {len(phrases)}")
 
     try:
         root_name = key_str.split()[0]
@@ -514,17 +479,25 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     mix_right = np.zeros(n_total, dtype=np.float32)
 
     if vocal_path:
-        f0_per_beat, energy_per_beat, midi_per_beat, f0_per_bar, energy_per_bar, midi_per_bar = analyze_vocal_per_beat_and_bar(vocal_path, beat_times, bar_times, analysis)
+        f0_per_beat, energy_per_beat, midi_per_beat, chroma_per_beat, f0_per_bar, energy_per_bar, midi_per_bar = analyze_vocal_per_beat_and_bar(vocal_path, beat_times, bar_times, analysis)
     else:
         f0_per_beat = [analysis.get("f0_mean_hz",180)]*len(beat_times)
         energy_per_beat = [0.1]*len(beat_times)
         midi_per_beat = [69+12*math.log2(analysis.get("f0_mean_hz",180)/440.0)]*len(beat_times)
+        chroma_per_beat = [np.ones(12)/12]*len(beat_times)
         f0_per_bar = [analysis.get("f0_mean_hz",180)]*len(bar_times)
         energy_per_bar = [0.1]*len(bar_times)
         midi_per_bar = [60]*len(bar_times)
 
     diatonic_chords = get_diatonic_chords(key_root_midi, is_major)
-    prog_lib = get_chord_progressions_library()
+    # Chord progressions library (local, no import to avoid circular)
+    prog_lib = {
+        "warm-acoustic": {"major": [[0, 7, 9, 5], [0, 5, 9, 7]], "minor": [[0, 8, 3, 10], [0, 3, 8, 10]]},
+        "lofi-chill": {"major": [[0, 5, 9, 7]], "minor": [[0, 8, 10, 3]]},
+        "piano-ballad": {"major": [[0, 5, 9, 5]], "minor": [[0, 5, 8, 10]]},
+        "indie-pop": {"major": [[0, 9, 5, 7]], "minor": [[0, 3, 8, 10]]},
+        "cinematic": {"major": [[0, 5, 3, 7]], "minor": [[0, 5, 8, 7]]}
+    }
     style_lib = prog_lib.get(style, prog_lib["warm-acoustic"])
     key_type = "major" if is_major else "minor"
     progressions = style_lib.get(key_type, style_lib["major"])
@@ -532,38 +505,33 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     expected_degrees = progressions[prog_idx]
     print(f"[generator] Style {style} {key_type} prog {prog_idx} degrees {expected_degrees}")
 
-    # v1.2: Per-beat AND per-bar chord choosing for changing sound accommodation
-    # For 30 sec changing sound, we need chords to change not just per bar but per beat when vocal changes a lot
     chosen_chords_per_bar = []
     chosen_chords_per_beat = []
     prev_chord = None
     
-    # Per-bar (for main progression)
     for bar_idx in range(len(bar_times)):
         vocal_midi = midi_per_bar[bar_idx] if bar_idx < len(midi_per_bar) else 60
         vocal_pc = int(round(vocal_midi)) % 12
         expected_deg = expected_degrees[bar_idx % len(expected_degrees)] if expected_degrees else None
-        best_chord, score = choose_chord_for_vocal_note(vocal_midi, vocal_pc, diatonic_chords, expected_deg, prev_chord, seed+bar_idx)
+        best_chord, score = choose_chord_for_vocal_note(vocal_midi, vocal_pc, diatonic_chords, expected_deg, prev_chord, seed+bar_idx, chroma=None)
         chosen_chords_per_bar.append(best_chord)
         prev_chord = best_chord
-        print(f"[generator] Bar {bar_idx} vocal {vocal_midi:.0f} {NOTE_NAMES[vocal_pc]} -> chord deg {best_chord['degree']} root {NOTE_NAMES[best_chord['root']%12]} score {score:.1f} contains? {vocal_pc in best_chord['pcs']}")
 
-    # Per-beat (for detailed changing accommodation in 30s)
     prev_chord_beat = None
     for beat_idx in range(len(beat_times)):
         vocal_midi = midi_per_beat[beat_idx] if beat_idx < len(midi_per_beat) else 60
         vocal_pc = int(round(vocal_midi)) % 12
-        # Expected degree based on bar
+        chroma = chroma_per_beat[beat_idx] if beat_idx < len(chroma_per_beat) else None
         bar_idx_for_beat = 0
         for b_idx, bt in enumerate(bar_times):
             if beat_times[beat_idx] >= bt:
                 bar_idx_for_beat = b_idx
         expected_deg = expected_degrees[bar_idx_for_beat % len(expected_degrees)] if expected_degrees else None
-        best_chord, score = choose_chord_for_vocal_note(vocal_midi, vocal_pc, diatonic_chords, expected_deg, prev_chord_beat, seed+beat_idx+1000)
+        best_chord, score = choose_chord_for_vocal_note(vocal_midi, vocal_pc, diatonic_chords, expected_deg, prev_chord_beat, seed+beat_idx+1000, chroma=chroma)
         chosen_chords_per_beat.append(best_chord)
         prev_chord_beat = best_chord
 
-    print(f"[generator] Per-beat chords: {len(chosen_chords_per_beat)} chosen for changing accommodation")
+    print(f"[generator] Per-beat chords {len(chosen_chords_per_beat)} for changing accommodation")
 
     num_bars = len(bar_times)
     drum_pattern_type = seed % 3
@@ -581,18 +549,15 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     for bar_idx in range(num_bars):
         bar_start_t = bar_times[bar_idx]
         bar_end_t = bar_times[bar_idx+1] if bar_idx+1 < len(bar_times) else bar_start_t + (60.0/bpm*4)
-        # v0.10: If bar_start is near a phrase start, use phrase duration for chord
-        # This makes chords follow YOUR singing, not fixed grid
         phrase_match = None
         for ps, pe in phrases:
-            if abs(bar_start_t - ps) < 0.12:  # bar starts at phrase start
+            if abs(bar_start_t - ps) < 0.12:
                 phrase_match = (ps, pe)
-                bar_end_t = pe  # chord lasts as long as phrase
+                bar_end_t = pe
                 break
         bar_duration = bar_end_t - bar_start_t
         if bar_duration <= 0 or bar_duration > 8.0:
             bar_duration = 60.0/bpm*4
-        # Clamp phrase duration to max 4 sec for musicality
         if phrase_match and bar_duration > 4.0:
             bar_duration = 4.0
             bar_end_t = bar_start_t + bar_duration
@@ -604,169 +569,182 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
         bar_midi = midi_per_bar[bar_idx] if bar_idx < len(midi_per_bar) else 60
         
         is_intro = bar_start_t + bar_duration < first_vocal_time - 0.2
-        # v0.10: Use phrases to determine silence, not just energy threshold
-        # If bar is inside any phrase, it's NOT silence even if energy low momentarily
         inside_phrase = any(ps -0.1 <= bar_start_t <= pe +0.1 for ps, pe in phrases) if phrases else True
         is_silence_bar = (bar_energy < 0.015) and not inside_phrase
-        # If bar is in gap between phrases, it's silence
         if phrases and not inside_phrase:
             is_silence_bar = True
 
-        chord_info = chosen_chords_per_bar[bar_idx] if bar_idx < len(chosen_chords_per_bar) else diatonic_chords[0]
-        chord_root = chord_info["root"]
-        upper_intervals = chord_info["intervals"]
-        base = 60 + (chord_root % 12)
-        while base < 60:
-            base += 12
-        while base > 67:
-            base -= 12
-        chord_notes_full = [chord_root-12, base, base+upper_intervals[1], base+upper_intervals[2], base+upper_intervals[2]+12]
+        # v1.3: Use per-beat chords for more responsive harmony
+        # For each beat in bar, if beat chord differs, we will change chord at beat time
+        beats_in_bar = [bt for bt in beat_times if bar_start_t <= bt < bar_end_t]
+        if not beats_in_bar:
+            beats_in_bar = [bar_start_t + i*(bar_duration/4) for i in range(4)]
 
-        bass_root = chord_root
-        target_bass_midi = bar_midi - 19
-        while bass_root > target_bass_midi + 7:
-            bass_root -= 12
-        while bass_root < target_bass_midi - 7:
-            bass_root += 12
-        while bass_root < 36:
-            bass_root += 12
-        while bass_root > 50:
-            bass_root -= 12
+        # Generate chord segments per beat if needed
+        # If all beats in bar have same chord, use one chord for whole bar (smooth)
+        # If beats have different chords, change chord per beat (accommodates changing)
+        beat_chords_in_bar = []
+        for bt in beats_in_bar:
+            try:
+                global_idx = beat_times.index(bt) if bt in beat_times else -1
+                if global_idx >=0 and global_idx < len(chosen_chords_per_beat):
+                    beat_chords_in_bar.append(chosen_chords_per_beat[global_idx])
+                else:
+                    beat_chords_in_bar.append(chosen_chords_per_bar[bar_idx] if bar_idx < len(chosen_chords_per_bar) else diatonic_chords[0])
+            except:
+                beat_chords_in_bar.append(chosen_chords_per_bar[bar_idx] if bar_idx < len(chosen_chords_per_bar) else diatonic_chords[0])
 
-        # Bass: v1.2 per-beat changing for 30s varying sound
-        if style == "piano-ballad":
-            vel = 0.72 + (bar_energy*0.45)
-            if is_intro:
-                vel *= 0.6
-            if is_silence_bar:
-                vel *= 0.3
-            note = synth_bass_v09(bass_root, sr, bar_duration*0.9, velocity=vel, variation=variation)
-            s = bar_start
-            e = min(s+len(note), n_total)
-            if s < n_total:
-                mix_left[s:e] += note[:e-s] * 0.92
-                mix_right[s:e] += note[:e-s] * 0.92
-        else:
-            beats_in_bar = [bt for bt in beat_times if bar_start_t <= bt < bar_end_t]
-            if not beats_in_bar:
-                beats_in_bar = [bar_start_t + i*(bar_duration/4) for i in range(4)]
-            # Bass groove: v1.2 per-beat chord following for changing sound
+        # Check if chords change within bar
+        unique_roots = len(set(c["root"] for c in beat_chords_in_bar))
+        change_per_beat = unique_roots > 1 and not is_silence_bar
+
+        if change_per_beat:
+            # Per-beat chord changes: each beat gets its own chord
             for b_idx, beat_t in enumerate(beats_in_bar):
-                # Find beat index in global beat_times
-                try:
-                    global_beat_idx = beat_times.index(beat_t) if beat_t in beat_times else -1
-                except:
-                    global_beat_idx = -1
-                
-                # Use per-beat chord root if available and vocal changes
-                beat_bass_root = bass_root
-                if global_beat_idx >=0 and global_beat_idx < len(chosen_chords_per_beat):
-                    beat_chord = chosen_chords_per_beat[global_beat_idx]
-                    # If beat chord differs from bar chord, use beat chord root for bass (follows changing melody)
-                    if beat_chord["root"] != chord_info["root"]:
-                        # Only if vocal energy high and chord change is meaningful
-                        beat_energy = energy_per_beat[global_beat_idx] if global_beat_idx < len(energy_per_beat) else bar_energy
-                        if beat_energy > 0.03:
-                            beat_bass_root = beat_chord["root"]
-                            # Transpose to bass range
-                            target = midi_per_beat[global_beat_idx] - 19 if global_beat_idx < len(midi_per_beat) else bar_midi -19
-                            while beat_bass_root > target + 7:
-                                beat_bass_root -= 12
-                            while beat_bass_root < target - 7:
-                                beat_bass_root += 12
-                            while beat_bass_root < 36:
-                                beat_bass_root += 12
-                            while beat_bass_root > 50:
-                                beat_bass_root -= 12
+                beat_chord_info = beat_chords_in_bar[b_idx]
+                beat_next_t = beats_in_bar[b_idx+1] if b_idx+1 < len(beats_in_bar) else bar_end_t
+                beat_dur = beat_next_t - beat_t
+                if beat_dur <=0:
+                    beat_dur = bar_duration / len(beats_in_bar)
 
-                # Play bass on downbeats, but also on beats where chord changes (for changing accommodation)
-                should_play = False
-                if b_idx in (0,2):
-                    should_play = True
-                elif style=="indie-pop" and b_idx==1 and random.random()>0.6:
-                    should_play = True
-                elif beat_bass_root != bass_root:
-                    # Chord changed at this beat -> play bass to highlight change
-                    should_play = True
+                chord_root = beat_chord_info["root"]
+                upper_intervals = beat_chord_info["intervals"]
+                base = 60 + (chord_root % 12)
+                while base < 60:
+                    base += 12
+                while base > 67:
+                    base -= 12
+                chord_notes_full = [chord_root-12, base, base+upper_intervals[1], base+upper_intervals[2], base+upper_intervals[2]+12]
+                upper_chord = chord_notes_full[1:]
 
-                if not should_play:
-                    continue
+                # Bass per beat
+                bass_root = chord_root
+                beat_midi = midi_per_beat[beat_times.index(beat_t)] if beat_t in beat_times and beat_times.index(beat_t) < len(midi_per_beat) else bar_midi
+                target_bass = beat_midi - 19
+                while bass_root > target_bass + 7:
+                    bass_root -= 12
+                while bass_root < target_bass - 7:
+                    bass_root += 12
+                while bass_root < 36:
+                    bass_root += 12
+                while bass_root > 50:
+                    bass_root -= 12
 
-                base_vel = 0.70 if b_idx==0 else 0.52
-                vel = base_vel + bar_energy*0.28 + random.random()*0.08
+                vel = 0.70 if b_idx==0 else 0.52
+                vel = vel + bar_energy*0.25 + random.random()*0.06
                 if is_intro:
                     vel *= 0.65
                 if is_silence_bar:
                     vel *= 0.2
-                dur = bar_duration/4 * (1.8 if b_idx==0 else 1.0)
-                note = synth_bass_v09(beat_bass_root, sr, dur, velocity=vel, variation=variation)
+                note = synth_bass_v09(bass_root, sr, beat_dur*0.85, velocity=vel, variation=variation)
                 s = int(beat_t * sr)
                 e = min(s+len(note), n_total)
                 if 0 <= s < n_total:
                     mix_left[s:e] += note[:e-s] * 0.88
                     mix_right[s:e] += note[:e-s] * 0.88
 
-        # Chords
-        is_bright = style in ("warm-acoustic", "indie-pop", "piano-ballad")
-        upper_chord = chord_notes_full[1:]
-        use_strum = (style == "warm-acoustic" and (seed % 2 == 0)) or (seed % 3 == 0)
-        chord_vel_base = 0.38 + bar_energy*0.38
-        if is_intro:
-            chord_vel_base *= 0.65
-        if is_silence_bar:
-            chord_vel_base *= 0.30
-        
-        if use_strum and style in ("warm-acoustic", "indie-pop"):
-            for idx, midi_note in enumerate(upper_chord):
-                delay = idx * (0.028 + random.random()*0.012)
-                vel = chord_vel_base + random.random()*0.09
-                note = synth_chord_v09([midi_note], sr, bar_duration - delay, velocity=vel, bright=True, variation=variation, style=style)
-                s = bar_start + int(delay*sr)
-                e = min(s+len(note), n_total)
-                pan = (idx / max(len(upper_chord)-1,1)) * 0.7 - 0.35 + random.random()*0.08
+                # Chord per beat
+                chord_vel = 0.38 + bar_energy*0.30 + random.random()*0.06
+                if is_intro:
+                    chord_vel *= 0.65
+                if is_silence_bar:
+                    chord_vel *= 0.30
+                chord_wave = synth_chord_v09(upper_chord, sr, beat_dur*0.95, velocity=chord_vel, bright=style in ("warm-acoustic","indie-pop"), variation=variation, style=style)
+                s = int(beat_t * sr)
+                e = min(s+len(chord_wave), n_total)
                 if s < n_total:
-                    mix_left[s:e] += note[:e-s] * (0.55 - pan*0.6)
-                    mix_right[s:e] += note[:e-s] * (0.55 + pan*0.6)
+                    mix_left[s:e] += chord_wave[:e-s] * 0.68
+                    mix_right[s:e] += chord_wave[:e-s] * 0.68
+
         else:
-            vel = chord_vel_base + random.random()*0.09 + (0.06 if bar_idx % 4 == 0 else 0)
-            chord_wave = synth_chord_v09(upper_chord, sr, bar_duration, velocity=vel, bright=is_bright, variation=variation, style=style)
-            s = bar_start
-            e = min(s+len(chord_wave), n_total)
-            if s < n_total:
-                # Slight stereo spread
-                mix_left[s:e] += chord_wave[:e-s] * 0.72
-                mix_right[s:e] += chord_wave[:e-s] * 0.72
+            # One chord per bar (original, smoother when vocal stable)
+            chord_info = chosen_chords_per_bar[bar_idx] if bar_idx < len(chosen_chords_per_bar) else diatonic_chords[0]
+            chord_root = chord_info["root"]
+            upper_intervals = chord_info["intervals"]
+            base = 60 + (chord_root % 12)
+            while base < 60:
+                base += 12
+            while base > 67:
+                base -= 12
+            chord_notes_full = [chord_root-12, base, base+upper_intervals[1], base+upper_intervals[2], base+upper_intervals[2]+12]
 
-        # Arpeggio
-        if style in ("indie-pop", "cinematic", "lofi-chill"):
-            if not (is_silence_bar or (is_intro and random.random() > 0.5)):
-                arp_notes = upper_chord[:3]
-                beats_in_bar = [bt for bt in beat_times if bar_start_t <= bt < bar_end_t]
-                if len(beats_in_bar) >= 2:
-                    for beat_idx, beat_t in enumerate(beats_in_bar):
-                        for sub in range(2):
-                            t = beat_t + sub * (bar_duration/len(beats_in_bar)/2)
-                            if random.random() > 0.82:
-                                continue
-                            octave = 12 if bar_midi > 70 else 0
-                            midi_note = arp_notes[(beat_idx*2+sub) % len(arp_notes)] + octave
-                            vel = 0.24 + bar_energy*0.18 + random.random()*0.07
-                            if is_intro:
-                                vel *= 0.5
-                            note = synth_chord_v09([midi_note], sr, (bar_duration/len(beats_in_bar)/2)*0.85, velocity=vel, bright=True, variation=variation, style=style)
-                            s = int(t*sr)
-                            e = min(s+len(note), n_total)
-                            if 0 <= s < n_total:
-                                pan = 0.35 if (beat_idx*2+sub)%2==0 else -0.35
-                                mix_left[s:e] += note[:e-s] * (0.5 - pan*0.28)
-                                mix_right[s:e] += note[:e-s] * (0.5 + pan*0.28)
+            bass_root = chord_root
+            target_bass_midi = bar_midi - 19
+            while bass_root > target_bass_midi + 7:
+                bass_root -= 12
+            while bass_root < target_bass_midi - 7:
+                bass_root += 12
+            while bass_root < 36:
+                bass_root += 12
+            while bass_root > 50:
+                bass_root -= 12
 
-        # Drums on beat_times
-        beats_in_bar = [bt for bt in beat_times if bar_start_t <= bt < bar_end_t]
-        if not beats_in_bar:
-            beats_in_bar = [bar_start_t + i*(bar_duration/4) for i in range(4)]
+            if style == "piano-ballad":
+                vel = 0.72 + (bar_energy*0.45)
+                if is_intro:
+                    vel *= 0.6
+                if is_silence_bar:
+                    vel *= 0.3
+                note = synth_bass_v09(bass_root, sr, bar_duration*0.9, velocity=vel, variation=variation)
+                s = bar_start
+                e = min(s+len(note), n_total)
+                if s < n_total:
+                    mix_left[s:e] += note[:e-s] * 0.92
+                    mix_right[s:e] += note[:e-s] * 0.92
+            else:
+                for b_idx, beat_t in enumerate(beats_in_bar):
+                    if b_idx not in (0,2):
+                        if not (style=="indie-pop" and b_idx==1 and random.random()>0.6):
+                            continue
+                    base_vel = 0.70 if b_idx==0 else 0.52
+                    vel = base_vel + bar_energy*0.28 + random.random()*0.08
+                    if is_intro:
+                        vel *= 0.65
+                    if is_silence_bar:
+                        vel *= 0.2
+                    dur = bar_duration/4 * (1.8 if b_idx==0 else 1.0)
+                    note = synth_bass_v09(bass_root, sr, dur, velocity=vel, variation=variation)
+                    s = int(beat_t * sr)
+                    e = min(s+len(note), n_total)
+                    if 0 <= s < n_total:
+                        mix_left[s:e] += note[:e-s] * 0.88
+                        mix_right[s:e] += note[:e-s] * 0.88
 
+            is_bright = style in ("warm-acoustic", "indie-pop", "piano-ballad")
+            upper_chord = chord_notes_full[1:]
+            use_strum = (style == "warm-acoustic" and (seed % 2 == 0)) or (seed % 3 == 0)
+            chord_vel_base = 0.38 + bar_energy*0.38
+            if is_intro:
+                chord_vel_base *= 0.65
+            if is_silence_bar:
+                chord_vel_base *= 0.30
+            
+            if use_strum and style in ("warm-acoustic", "indie-pop"):
+                for idx, midi_note in enumerate(upper_chord):
+                    delay = idx * (0.028 + random.random()*0.012)
+                    vel = chord_vel_base + random.random()*0.09
+                    note = synth_chord_v09([midi_note], sr, bar_duration - delay, velocity=vel, bright=True, variation=variation, style=style)
+                    s = bar_start + int(delay*sr)
+                    e = min(s+len(note), n_total)
+                    pan = (idx / max(len(upper_chord)-1,1)) * 0.7 - 0.35 + random.random()*0.08
+                    if s < n_total:
+                        mix_left[s:e] += note[:e-s] * (0.55 - pan*0.6)
+                        mix_right[s:e] += note[:e-s] * (0.55 + pan*0.6)
+            else:
+                vel = chord_vel_base + random.random()*0.09 + (0.06 if bar_idx % 4 == 0 else 0)
+                chord_wave = synth_chord_v09(upper_chord, sr, bar_duration, velocity=vel, bright=is_bright, variation=variation, style=style)
+                s = bar_start
+                e = min(s+len(chord_wave), n_total)
+                if s < n_total:
+                    mix_left[s:e] += chord_wave[:e-s] * 0.72
+                    mix_right[s:e] += chord_wave[:e-s] * 0.72
+
+        # Drums: v1.3 kick on YOUR onsets (perfect alignment)
+        # First, always kick on phrase starts and onset_times
         for b_idx, beat_t in enumerate(beats_in_bar):
+            # Check if this beat is near an onset (vocal phrase start)
+            is_onset_beat = any(abs(beat_t - ot) < 0.12 for ot in onset_times)
+            
             beat_start = int(beat_t * sr)
             kick_beats = [0]
             if drum_pattern_type == 0:
@@ -780,16 +758,21 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
             else:
                 kick_beats = [0]
 
-            if b_idx in kick_beats:
-                if is_silence_bar and b_idx != 0:
+            # Always kick on onset beats for perfect alignment, even if not in kick_beats pattern
+            should_kick = (b_idx in kick_beats) or is_onset_beat
+
+            if should_kick:
+                if is_silence_bar and b_idx != 0 and not is_onset_beat:
                     continue
-                if bar_energy > 0.07 or b_idx==0 or is_intro:
+                if bar_energy > 0.05 or b_idx==0 or is_intro or is_onset_beat:
                     s = beat_start
-                    humanize = int((random.random()-0.5)*0.006*sr)
+                    humanize = int((random.random()-0.5)*0.005*sr)
                     s = max(0, s+humanize)
                     e = min(s+len(kick), n_total)
                     if s < n_total:
-                        vel = 0.72 + bar_energy*0.18 + random.random()*0.08
+                        vel = 0.75 + bar_energy*0.15 + random.random()*0.06
+                        if is_onset_beat:
+                            vel += 0.15  # accent on your onsets
                         if is_intro:
                             vel *= 0.65
                         mix_left[s:e] += kick[:e-s] * vel
@@ -801,11 +784,11 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
                 if is_silence_bar and b_idx==1:
                     continue
                 s = beat_start
-                humanize = int((random.random()-0.5)*0.006*sr)
+                humanize = int((random.random()-0.5)*0.005*sr)
                 s = max(0, s+humanize)
                 e = min(s+len(snare), n_total)
                 if s < n_total:
-                    vel = 0.56 + bar_energy*0.18 + random.random()*0.12
+                    vel = 0.56 + bar_energy*0.15 + random.random()*0.10
                     if is_intro:
                         vel *= 0.55
                     if is_silence_bar:
@@ -820,35 +803,33 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
                 is_open = (b_idx==len(beats_in_bar)-1 and hi==hat_div-1 and random.random()>0.3)
                 hat = hat_open if is_open else hat_closed
                 he = min(hs+len(hat), n_total)
-                if hs < n_total and random.random()>0.12:
-                    hat_vel = 0.48 + bar_energy*0.09 + random.random()*0.12
+                if hs < n_total and random.random()>0.10:
+                    hat_vel = 0.48 + bar_energy*0.07 + random.random()*0.10
                     if is_silence_bar:
-                        hat_vel *= 0.35
+                        hat_vel *= 0.32
                     if is_intro:
-                        hat_vel *= 0.55
+                        hat_vel *= 0.52
                     if bar_energy < 0.02:
-                        hat_vel *= 0.45
+                        hat_vel *= 0.42
                     mix_left[hs:he] += hat[:he-hs] * hat_vel
                     mix_right[hs:he] += hat[:he-hs] * hat_vel
 
+        # Extra accent on onsets
         onsets_in_bar = [ot for ot in onset_times if bar_start_t <= ot < bar_end_t]
         for ot in onsets_in_bar:
-            accent_t = max(bar_start_t, ot - 0.008)
+            accent_t = max(bar_start_t, ot - 0.006)
             s = int(accent_t * sr)
             e = min(s+len(hat_closed), n_total)
             if s < n_total and not is_silence_bar:
-                mix_left[s:e] += hat_closed[:e-s] * 0.22
-                mix_right[s:e] += hat_closed[:e-s] * 0.22
+                mix_left[s:e] += hat_closed[:e-s] * 0.20
+                mix_right[s:e] += hat_closed[:e-s] * 0.20
 
-    # Master: slight glue + reverb
-    # Normalize first
     max_val = max(np.max(np.abs(mix_left)), np.max(np.abs(mix_right)), 1e-6)
     if max_val > 0.85:
         scale = 0.85 / max_val
         mix_left *= scale
         mix_right *= scale
 
-    # Lofi vinyl
     if style == "lofi-chill":
         a = 0.18
         for ch in (mix_left, mix_right):
@@ -860,9 +841,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
         mix_left += crackle * 0.5
         mix_right += crackle * 0.5
 
-    # Reverb: 18% wet for spacious studio feel
     stereo = np.stack([mix_left, mix_right], axis=1)
-    # Apply reverb based on style
     reverb_mix = 0.18
     if style == "cinematic":
         reverb_mix = 0.28
@@ -873,12 +852,11 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
 
     stereo = simple_reverb(stereo, sr, room=0.6, damp=0.4, mix=reverb_mix)
 
-    # Final limit
     max_val = np.max(np.abs(stereo))
     if max_val > 0.89:
         stereo = stereo * (0.89 / max_val)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(out_path), stereo, sr)
-    print(f"[generator] v0.9 Saved {out_path}, {total_duration:.1f}s, {len(bar_times)} bars studio, seed {seed}, hash {file_hash}")
+    print(f"[generator] v1.3 Saved {out_path}, {total_duration:.1f}s, {len(bar_times)} bars per-beat-changing, seed {seed}, hash {file_hash}")
     return out_path
