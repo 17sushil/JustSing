@@ -532,8 +532,13 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     expected_degrees = progressions[prog_idx]
     print(f"[generator] Style {style} {key_type} prog {prog_idx} degrees {expected_degrees}")
 
+    # v1.2: Per-beat AND per-bar chord choosing for changing sound accommodation
+    # For 30 sec changing sound, we need chords to change not just per bar but per beat when vocal changes a lot
     chosen_chords_per_bar = []
+    chosen_chords_per_beat = []
     prev_chord = None
+    
+    # Per-bar (for main progression)
     for bar_idx in range(len(bar_times)):
         vocal_midi = midi_per_bar[bar_idx] if bar_idx < len(midi_per_bar) else 60
         vocal_pc = int(round(vocal_midi)) % 12
@@ -542,6 +547,23 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
         chosen_chords_per_bar.append(best_chord)
         prev_chord = best_chord
         print(f"[generator] Bar {bar_idx} vocal {vocal_midi:.0f} {NOTE_NAMES[vocal_pc]} -> chord deg {best_chord['degree']} root {NOTE_NAMES[best_chord['root']%12]} score {score:.1f} contains? {vocal_pc in best_chord['pcs']}")
+
+    # Per-beat (for detailed changing accommodation in 30s)
+    prev_chord_beat = None
+    for beat_idx in range(len(beat_times)):
+        vocal_midi = midi_per_beat[beat_idx] if beat_idx < len(midi_per_beat) else 60
+        vocal_pc = int(round(vocal_midi)) % 12
+        # Expected degree based on bar
+        bar_idx_for_beat = 0
+        for b_idx, bt in enumerate(bar_times):
+            if beat_times[beat_idx] >= bt:
+                bar_idx_for_beat = b_idx
+        expected_deg = expected_degrees[bar_idx_for_beat % len(expected_degrees)] if expected_degrees else None
+        best_chord, score = choose_chord_for_vocal_note(vocal_midi, vocal_pc, diatonic_chords, expected_deg, prev_chord_beat, seed+beat_idx+1000)
+        chosen_chords_per_beat.append(best_chord)
+        prev_chord_beat = best_chord
+
+    print(f"[generator] Per-beat chords: {len(chosen_chords_per_beat)} chosen for changing accommodation")
 
     num_bars = len(bar_times)
     drum_pattern_type = seed % 3
@@ -611,7 +633,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
         while bass_root > 50:
             bass_root -= 12
 
-        # Bass: play on 1 and 3 for groove, not every beat
+        # Bass: v1.2 per-beat changing for 30s varying sound
         if style == "piano-ballad":
             vel = 0.72 + (bar_energy*0.45)
             if is_intro:
@@ -628,12 +650,48 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
             beats_in_bar = [bt for bt in beat_times if bar_start_t <= bt < bar_end_t]
             if not beats_in_bar:
                 beats_in_bar = [bar_start_t + i*(bar_duration/4) for i in range(4)]
-            # Bass groove: only on 0 and 2 (1 and 3), with occasional 2nd beat
+            # Bass groove: v1.2 per-beat chord following for changing sound
             for b_idx, beat_t in enumerate(beats_in_bar):
-                # Play bass on downbeats
-                if b_idx not in (0,2):
-                    if not (style=="indie-pop" and b_idx==1 and random.random()>0.6):
-                        continue
+                # Find beat index in global beat_times
+                try:
+                    global_beat_idx = beat_times.index(beat_t) if beat_t in beat_times else -1
+                except:
+                    global_beat_idx = -1
+                
+                # Use per-beat chord root if available and vocal changes
+                beat_bass_root = bass_root
+                if global_beat_idx >=0 and global_beat_idx < len(chosen_chords_per_beat):
+                    beat_chord = chosen_chords_per_beat[global_beat_idx]
+                    # If beat chord differs from bar chord, use beat chord root for bass (follows changing melody)
+                    if beat_chord["root"] != chord_info["root"]:
+                        # Only if vocal energy high and chord change is meaningful
+                        beat_energy = energy_per_beat[global_beat_idx] if global_beat_idx < len(energy_per_beat) else bar_energy
+                        if beat_energy > 0.03:
+                            beat_bass_root = beat_chord["root"]
+                            # Transpose to bass range
+                            target = midi_per_beat[global_beat_idx] - 19 if global_beat_idx < len(midi_per_beat) else bar_midi -19
+                            while beat_bass_root > target + 7:
+                                beat_bass_root -= 12
+                            while beat_bass_root < target - 7:
+                                beat_bass_root += 12
+                            while beat_bass_root < 36:
+                                beat_bass_root += 12
+                            while beat_bass_root > 50:
+                                beat_bass_root -= 12
+
+                # Play bass on downbeats, but also on beats where chord changes (for changing accommodation)
+                should_play = False
+                if b_idx in (0,2):
+                    should_play = True
+                elif style=="indie-pop" and b_idx==1 and random.random()>0.6:
+                    should_play = True
+                elif beat_bass_root != bass_root:
+                    # Chord changed at this beat -> play bass to highlight change
+                    should_play = True
+
+                if not should_play:
+                    continue
+
                 base_vel = 0.70 if b_idx==0 else 0.52
                 vel = base_vel + bar_energy*0.28 + random.random()*0.08
                 if is_intro:
@@ -641,7 +699,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
                 if is_silence_bar:
                     vel *= 0.2
                 dur = bar_duration/4 * (1.8 if b_idx==0 else 1.0)
-                note = synth_bass_v09(bass_root, sr, dur, velocity=vel, variation=variation)
+                note = synth_bass_v09(beat_bass_root, sr, dur, velocity=vel, variation=variation)
                 s = int(beat_t * sr)
                 e = min(s+len(note), n_total)
                 if 0 <= s < n_total:

@@ -2,6 +2,11 @@
 # If this fails to install or you set WHISPER=off, the app works fine without it.
 faster-whisper
 
+# Optional: vocal.ai level separation — Demucs (like vocal.ai / remove-vocal.ai)
+# pip install demucs
+# SEPARATOR=demucs in .env to extract vocal from mixed songs
+demucs
+
 # Optional: Mureka-level quality — MusicGen Melody (melody-guided, follows your voice)
 # Zero-cost, self-hosted, no API key, but needs torch + 1-4GB download
 # For Python 3.14 (your version): use transformers (works, no spacy/blis)

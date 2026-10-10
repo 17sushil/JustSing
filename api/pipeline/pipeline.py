@@ -12,10 +12,12 @@ from .analysis import analyze_audio
 from .generator_api import generate_accompaniment_auto
 from .mix import mix_vocal_and_accompaniment
 from .master import master_audio, loudnorm_ffmpeg
+from .separator import extract_vocal_with_fallback
 
 def run_pipeline(job_id: str, input_file: Path, style="warm-acoustic"):
     """
     Runs full pipeline for a job. Updates status.json at each stage.
+    v1.2: Demucs separation like vocal.ai + phrase-following + per-beat changing
     """
     jdir = job_dir(job_id)
     rdir = render_dir(job_id)
@@ -35,8 +37,10 @@ def run_pipeline(job_id: str, input_file: Path, style="warm-acoustic"):
     try:
         update("extracting", 5, "Extracting audio...")
 
-        # Stage 0: extract
-        wav_mono, wav_stereo = extract_audio(input_file, jdir / "extracted.wav")
+        # Stage 0: extract + separate (v1.2: Demucs like vocal.ai)
+        # If SEPARATOR=demucs, isolates vocal from mixed song
+        # If SEPARATOR=none, assumes input is already vocal
+        wav_mono, wav_stereo = extract_vocal_with_fallback(input_file, jdir, sr=44100)
         # For analysis, use mono
         # For mix, use stereo
 
