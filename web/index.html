@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SingSmith — Sing anything, get a finished song</title>
+<title>SingSmith v1.4 — Perfect Align</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
 <style>
@@ -22,7 +22,7 @@
         <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-pink-500 flex items-center justify-center text-white font-bold text-lg">S</div>
         <div>
           <div class="font-bold text-[17px] leading-none">SingSmith</div>
-          <div class="text-[11px] tracking-widest uppercase text-zinc-500 mono">Zero-Cost MVP • v0.2 fixed</div>
+          <div class="text-[11px] tracking-widest uppercase text-zinc-500 mono">v1.4 PERFECT-ALIGN • Demucs + MusicGen</div>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -34,8 +34,9 @@
 
   <!-- Sandbox notice -->
   <div id="sandboxNotice" class="max-w-6xl mx-auto px-6 pt-4">
-    <div class="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs leading-relaxed">
-      <b>Sandbox tip:</b> If you're in Arena's preview iframe, microphone access may be blocked. <b>Upload still works</b> (drag-drop or Browse). If upload fails, use <a href="/test-upload" class="underline font-semibold">/test-upload</a> (no-JS form). For recording, open the preview in a new tab (pop-out icon) — then allow mic.
+    <div class="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-xs leading-relaxed">
+      <b>v1.4 PERFECT-ALIGN:</b> Continuous 50ms pitch tracking, vocal-as-top-note chords, bass follows your pitch curve, drums on your onsets (80ms window), sidechain ducking, vocal glue octave.
+      <br><b>Upload fixed:</b> Click Browse or drag-drop. If still fails, use <a href="/test-upload" class="underline font-semibold">/test-upload</a> fallback.
       <span id="originInfo" class="mono text-[10px] block mt-1 text-zinc-500"></span>
     </div>
   </div>
@@ -48,12 +49,12 @@
           Get a finished song.
         </h1>
         <p class="mt-4 text-zinc-600 leading-relaxed">
-          No instruments. No music theory. In <b>any language</b>. We detect your key, tempo & vocal range — then compose an accompaniment <i>around your voice</i>.
+          No instruments. No music theory. In <b>any language</b>. v1.4 tracks your pitch every 50ms — chords, bass & drums lock to <i>your</i> voice.
         </p>
         <div class="mt-3 flex flex-wrap gap-2 text-[11px] mono">
-          <span class="px-2.5 py-1 rounded-full bg-purple-100 text-purple-700">procedural synth • $0</span>
-          <span class="px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-600">Lyria $0.08 ready</span>
-          <span class="px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-600">ElevenLabs free 10k</span>
+          <span class="px-2.5 py-1 rounded-full bg-purple-100 text-purple-700">v1.4 perfect-align • $0</span>
+          <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700">Demucs vocal.ai • $0</span>
+          <span class="px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-600">MusicGen small • $0 real instruments</span>
         </div>
       </div>
 
@@ -67,13 +68,18 @@
 
       <div class="grid sm:grid-cols-2 gap-4">
         <div id="dropZone" class="group relative rounded-[20px] border-2 border-dashed border-purple-200 bg-white p-5 hover:border-purple-400 transition cursor-pointer glow">
-          <input id="fileInput" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.webm,.ogg,.flac,.mov,.aac" class="hidden">
-          <div class="flex flex-col items-center text-center py-4">
+          <!-- Hidden primary input -->
+          <input id="fileInput" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.webm,.ogg,.flac,.mov,.aac,.opus,.wma" class="hidden">
+          <div class="flex flex-col items-center text-center py-3">
             <div class="w-12 h-12 rounded-full bg-purple-50 flex items-center justify-center text-2xl">🎤</div>
             <div class="mt-3 font-semibold">Drop your singing</div>
-            <div class="text-xs text-zinc-500 mt-1">MP3, WAV, M4A, MP4, WebM — any language</div>
-            <div class="mt-3 text-[11px] mono px-3 py-1 rounded-full bg-zinc-900 text-white group-hover:bg-black">Browse files</div>
-            <div class="text-[10px] mono mt-2 text-zinc-400">or use <a href="/test-upload" class="underline">/test-upload</a></div>
+            <div class="text-xs text-zinc-500 mt-1">MP3, WAV, M4A, MP4, WebM — any language, up to 50MB</div>
+            <button id="browseBtn" type="button" class="mt-3 text-[11px] mono px-4 py-2 rounded-full bg-zinc-900 text-white group-hover:bg-black hover:bg-black transition">Browse files</button>
+            <div class="mt-3 w-full">
+              <label class="text-[10px] mono text-zinc-400">Fallback browse (if button fails):</label>
+              <input id="fileInputFallback" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.webm,.ogg,.flac,.mov,.aac" class="mt-1 block w-full text-[11px] mono file:mr-2 file:py-1 file:px-3 file:rounded-full file:border-0 file:bg-purple-100 file:text-purple-700 hover:file:bg-purple-200">
+            </div>
+            <div class="text-[10px] mono mt-2 text-zinc-400">or use <a href="/test-upload" class="underline font-semibold">/test-upload</a> (no-JS, always works)</div>
           </div>
         </div>
 
@@ -87,7 +93,7 @@
             <div class="flex-1">
               <div id="recTimer" class="mono text-sm">00:00</div>
               <div class="mt-2 h-[24px] flex items-end gap-[2px]" id="liveBars"></div>
-              <div id="recHint" class="text-[11px] text-zinc-500 mt-1">Needs mic permission. If blocked in iframe, open in new tab.</div>
+              <div id="recHint" class="text-[11px] text-zinc-500 mt-1">Needs mic permission. If blocked in iframe, open in new tab (pop-out icon).</div>
             </div>
           </div>
           <audio id="recPreview" controls class="w-full mt-3 hidden"></audio>
@@ -104,21 +110,21 @@
       </div>
 
       <button id="generateBtn" disabled class="w-full h-[56px] rounded-full bg-zinc-300 text-zinc-500 font-semibold tracking-wide cursor-not-allowed transition flex items-center justify-center gap-2">
-        <span>Generate my song</span><span>→</span>
+        <span>Select a file first</span>
       </button>
-      <div class="text-[11px] text-zinc-500 mono text-center">Zero-cost pipeline: extract → analyze → compose → mix → master • ~20-40 sec for 30s vocal</div>
+      <div class="text-[11px] text-zinc-500 mono text-center">v1.4: 50ms continuous pitch tracking • vocal-as-top-note • bass follows curve • drums on 80ms onsets • sidechain duck • ~20-40 sec</div>
 
       <!-- Debug console -->
-      <details class="rounded-xl bg-zinc-50 border border-zinc-200 p-3">
-        <summary class="text-xs mono cursor-pointer">Debug console (click to expand)</summary>
-        <pre id="debugLog" class="mt-2 text-[10px] mono whitespace-pre-wrap max-h-40 overflow-auto bg-white p-2 rounded border"></pre>
+      <details class="rounded-xl bg-zinc-50 border border-zinc-200 p-3" open>
+        <summary class="text-xs mono cursor-pointer">Debug console (upload logs)</summary>
+        <pre id="debugLog" class="mt-2 text-[10px] mono whitespace-pre-wrap max-h-48 overflow-auto bg-white p-2 rounded border">Waiting...</pre>
       </details>
     </div>
 
     <div class="space-y-6">
       <div id="progressCard" class="hidden rounded-[24px] bg-white border border-zinc-200 p-6 shadow-sm">
         <div class="flex items-center justify-between">
-          <div class="font-semibold">Crafting your song</div>
+          <div class="font-semibold">Crafting your song — v1.4 perfect-align</div>
           <div id="progressPct" class="mono text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">0%</div>
         </div>
         <div class="mt-4 h-2 rounded-full bg-zinc-100 overflow-hidden">
@@ -136,11 +142,11 @@
       <div id="resultCard" class="hidden rounded-[24px] bg-zinc-900 text-white p-6 shadow-xl">
         <div class="flex items-center gap-2">
           <div class="w-8 h-8 rounded-full bg-white text-zinc-900 flex items-center justify-center font-bold">✓</div>
-          <div class="font-semibold">Your finished song is ready</div>
+          <div class="font-semibold">Your finished song is ready — v1.4 perfect-align</div>
         </div>
         <div id="resultMeta" class="mt-3 text-xs mono text-zinc-400"></div>
         <div class="mt-5 rounded-2xl bg-zinc-800 p-4">
-          <div class="text-[11px] mono uppercase text-zinc-400">Final mix</div>
+          <div class="text-[11px] mono uppercase text-zinc-400">Final mix (vocal 100% preserved)</div>
           <audio id="finalAudio" controls class="w-full mt-2"></audio>
           <div class="mt-3 flex flex-wrap gap-2">
             <a id="dlMp3" class="text-xs px-4 py-2 rounded-full bg-white text-zinc-900 font-semibold hover:bg-zinc-100" download>Download MP3</a>
@@ -148,8 +154,8 @@
           </div>
         </div>
         <div class="mt-4 grid grid-cols-2 gap-3">
-          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Vocal stem</div><audio id="vocalAudio" controls class="w-full mt-2 h-8"></audio></div>
-          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Accompaniment</div><audio id="accAudio" controls class="w-full mt-2 h-8"></audio></div>
+          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Vocal stem (Demucs)</div><audio id="vocalAudio" controls class="w-full mt-2 h-8"></audio></div>
+          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Accompaniment (perfect-align)</div><audio id="accAudio" controls class="w-full mt-2 h-8"></audio></div>
         </div>
         <div id="lyricsBox" class="mt-5 hidden rounded-2xl bg-zinc-800 p-4">
           <div class="text-[11px] mono uppercase text-zinc-400">Lyrics (auto-detected)</div>
@@ -162,12 +168,13 @@
       </div>
 
       <div class="rounded-[24px] bg-white border border-purple-100 p-6">
-        <div class="font-semibold">How this zero-cost MVP works</div>
+        <div class="font-semibold">How v1.4 perfect-align works</div>
         <div class="mt-3 space-y-3 text-sm text-zinc-600 leading-relaxed">
-          <p><b>1. You sing.</b> Any language, off-key is okay — we tune the <i>track</i> to you.</p>
-          <p><b>2. We analyze.</b> BPM, key, range — all local.</p>
-          <p><b>3. We compose.</b> Procedural synth in <i>your</i> key & tempo.</p>
-          <p><b>4. Mix & master.</b> Sidechain ducking, -14 LUFS, MP3 320k.</p>
+          <p><b>1. You sing.</b> Any language, off-key is okay — we track pitch every 50ms.</p>
+          <p><b>2. We analyze.</b> BPM, key, phrases + continuous F0 curve, 12-dim chroma, energy.</p>
+          <p><b>3. We compose v1.4:</b> Vocal note = top note of chord, bass follows your pitch curve at -19 semitones with glide, drums kick on your onsets (80ms window), sidechain duck when you sing loud, vocal glue octave doubling.</p>
+          <p><b>4. Mix & master.</b> Demucs vocal isolation (like vocal.ai), -14 LUFS, MP3 320k.</p>
+          <p class="text-[11px] mono bg-purple-50 p-2 rounded">For Mureka-level real instruments: set GENERATOR=musicgen-small in .env (needs torch+transformers, $0 self-hosted, 300M model ~1GB)</p>
         </div>
       </div>
 
@@ -182,9 +189,9 @@
   </main>
 
   <footer class="max-w-6xl mx-auto px-6 py-10 text-[11px] mono text-zinc-400">
-    SingSmith MVP v0.2 • Fixed sandbox routing • <a href="/api/health" class="underline">API</a> • <a href="/test-upload" class="underline">Fallback upload</a>
+    SingSmith v1.4 PERFECT-ALIGN • Fixed upload • <a href="/api/health" class="underline">API</a> • <a href="/test-upload" class="underline">Fallback upload</a> • Generator: procedural v1.4 + Demucs + MusicGen-small option
   </footer>
 
-<script src="/web/app.js?v=2"></script>
+<script src="/web/app.js?v=4"></script>
 </body>
 </html>

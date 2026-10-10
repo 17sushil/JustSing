@@ -1,4 +1,4 @@
-/* SingSmith Frontend v0.2 — fixed for sandbox preview */
+/* SingSmith Frontend v1.4 — FIXED upload + perfect-align backend */
 const STYLES = [
   { id: 'warm-acoustic', name: 'Warm Acoustic', desc: 'Guitar + soft drums', emoji: '🎸' },
   { id: 'lofi-chill', name: 'LoFi Chill', desc: 'Mellow, vinyl crackle', emoji: '🌙' },
@@ -21,7 +21,7 @@ const log = (msg) => {
   console.log(msg);
   const d = el('debugLog');
   if(d){
-    d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + d.textContent.slice(0,3000);
+    d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + d.textContent.slice(0,4000);
   }
 };
 const showError = (msg) => {
@@ -31,18 +31,25 @@ const showError = (msg) => {
   log('ERROR: ' + msg);
 };
 const hideError = () => {
-  el('errorBox').classList.add('hidden');
+  const b = el('errorBox');
+  if(b) b.classList.add('hidden');
 };
 
 function initStylePicker() {
   const container = el('stylePicker');
+  if(!container) return;
   container.innerHTML = '';
   STYLES.forEach(s => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = `text-left rounded-2xl border p-3 bg-white hover:border-purple-300 transition ${s.id===selectedStyle?'border-purple-500 ring-2 ring-purple-100': 'border-zinc-200'}`;
     btn.innerHTML = `<div class="flex items-center gap-2"><span class="text-lg">${s.emoji}</span><span class="font-semibold text-sm">${s.name}</span></div><div class="text-[11px] text-zinc-500 mt-1">${s.desc}</div>`;
-    btn.onclick = () => { selectedStyle = s.id; initStylePicker(); if(selectedFile) el('fileMeta').textContent = `${(selectedFile.size/1024/1024).toFixed(2)} MB • ${selectedStyle}`; };
+    btn.onclick = () => { 
+      selectedStyle = s.id; 
+      initStylePicker(); 
+      if(selectedFile && el('fileMeta')) el('fileMeta').textContent = `${(selectedFile.size/1024/1024).toFixed(2)} MB • ${selectedStyle}`;
+      log('Style selected: ' + selectedStyle);
+    };
     container.appendChild(btn);
   });
 }
@@ -60,135 +67,202 @@ function initLiveBars() {
 }
 
 function setFile(file, nameHint) {
+  if(!file){
+    log('setFile called with null');
+    return;
+  }
   selectedFile = file;
-  el('fileInfo').classList.remove('hidden');
-  el('fileName').textContent = nameHint || file.name || 'recording.webm';
+  log(`File set: name=${nameHint||file.name} size=${file.size} type=${file.type}`);
+  const fileInfo = el('fileInfo');
+  if(fileInfo) fileInfo.classList.remove('hidden');
+  const fileNameEl = el('fileName');
+  if(fileNameEl) fileNameEl.textContent = nameHint || file.name || 'recording.webm';
   const sizeMB = (file.size/1024/1024).toFixed(2);
-  el('fileMeta').textContent = `${sizeMB} MB • ${selectedStyle} • ${file.type||'audio'}`;
-  el('generateBtn').disabled = false;
-  el('generateBtn').className = 'w-full h-[56px] rounded-full bg-zinc-900 text-white font-semibold tracking-wide hover:bg-black transition flex items-center justify-center gap-2 shadow-lg';
+  const fileMetaEl = el('fileMeta');
+  if(fileMetaEl) fileMetaEl.textContent = `${sizeMB} MB • ${selectedStyle} • ${file.type||'audio'}`;
+  const genBtn = el('generateBtn');
+  if(genBtn){
+    genBtn.disabled = false;
+    genBtn.className = 'w-full h-[56px] rounded-full bg-zinc-900 text-white font-semibold tracking-wide hover:bg-black transition flex items-center justify-center gap-2 shadow-lg cursor-pointer';
+    genBtn.innerHTML = '<span>Generate my song</span><span>→</span>';
+  }
   hideError();
-  log(`File selected: ${nameHint||file.name} ${sizeMB}MB ${file.type}`);
 }
 
 function clearFile() {
   selectedFile = null;
-  el('fileInfo').classList.add('hidden');
+  const fileInfo = el('fileInfo');
+  if(fileInfo) fileInfo.classList.add('hidden');
   const inp = el('fileInput');
   if(inp) inp.value = '';
-  el('generateBtn').disabled = true;
-  el('generateBtn').className = 'w-full h-[56px] rounded-full bg-zinc-300 text-zinc-500 font-semibold tracking-wide cursor-not-allowed transition flex items-center justify-center gap-2';
+  const inp2 = el('fileInputFallback');
+  if(inp2) inp2.value = '';
+  const genBtn = el('generateBtn');
+  if(genBtn){
+    genBtn.disabled = true;
+    genBtn.className = 'w-full h-[56px] rounded-full bg-zinc-300 text-zinc-500 font-semibold tracking-wide cursor-not-allowed transition flex items-center justify-center gap-2';
+    genBtn.innerHTML = '<span>Select a file first</span>';
+  }
   log('File cleared');
 }
 
 async function uploadAndGenerate() {
+  log('uploadAndGenerate clicked, selectedFile=' + (selectedFile?selectedFile.name:'null'));
   if(!selectedFile){
-    showError('No file selected. Please drop a file or record first.');
+    showError('No file selected. Please drop a file, click Browse, or record first.');
     return;
   }
   hideError();
   const fd = new FormData();
-  fd.append('file', selectedFile, selectedFile.name || 'upload.webm');
+  // Ensure file has a name
+  const fileName = selectedFile.name || `upload_${Date.now()}.webm`;
+  fd.append('file', selectedFile, fileName);
   fd.append('style', selectedStyle);
 
-  el('progressCard').classList.remove('hidden');
-  el('resultCard').classList.add('hidden');
-  el('progressBar').style.width = '5%';
-  el('progressPct').textContent = '5%';
-  el('progressMsg').textContent = 'Uploading...';
-  el('analysisBox').classList.add('hidden');
+  const progressCard = el('progressCard');
+  if(progressCard) progressCard.classList.remove('hidden');
+  const resultCard = el('resultCard');
+  if(resultCard) resultCard.classList.add('hidden');
+  const progressBar = el('progressBar');
+  if(progressBar){
+    progressBar.style.width = '5%';
+    progressBar.style.background = '';
+  }
+  const progressPct = el('progressPct');
+  if(progressPct) progressPct.textContent = '5%';
+  const progressMsg = el('progressMsg');
+  if(progressMsg) progressMsg.textContent = 'Uploading...';
+  const analysisBox = el('analysisBox');
+  if(analysisBox) analysisBox.classList.add('hidden');
 
-  log(`Uploading ${selectedFile.name} as ${selectedStyle}...`);
+  log(`Uploading ${fileName} (${(selectedFile.size/1024).toFixed(1)}KB) as ${selectedStyle} to /api/upload`);
 
   try {
     const res = await fetch('/api/upload', { method: 'POST', body: fd });
     const text = await res.text();
-    log(`Upload response ${res.status}: ${text.slice(0,500)}`);
+    log(`Upload response ${res.status}: ${text.slice(0,800)}`);
     if(!res.ok){
-      throw new Error(`Upload failed ${res.status}: ${text.slice(0,300)}`);
+      throw new Error(`Upload failed ${res.status}: ${text.slice(0,500)}`);
     }
-    const data = JSON.parse(text);
+    let data;
+    try{
+      data = JSON.parse(text);
+    }catch(e){
+      throw new Error('Invalid JSON response: ' + text.slice(0,300));
+    }
     currentJobId = data.job_id;
+    if(!currentJobId){
+      throw new Error('No job_id in response: ' + text.slice(0,300));
+    }
     log(`Job created: ${currentJobId}`);
+    if(progressMsg) progressMsg.textContent = 'Queued... job ' + currentJobId.slice(0,8);
     pollJob(currentJobId);
   } catch(e) {
-    showError('Upload failed: ' + e.message + ' — Try /test-upload fallback. Check debug console.');
-    el('progressMsg').textContent = 'Upload failed: ' + e.message;
-    el('progressBar').style.width = '100%';
-    el('progressBar').style.background = '#ef4444';
-    log('Upload exception: ' + e.stack);
+    showError('Upload failed: ' + e.message + ' — Try /test-upload fallback. Check debug console below.');
+    if(progressMsg) progressMsg.textContent = 'Upload failed: ' + e.message;
+    if(progressBar){
+      progressBar.style.width = '100%';
+      progressBar.style.background = '#ef4444';
+    }
+    log('Upload exception: ' + e.message + '\n' + (e.stack||''));
   }
 }
 
 function pollJob(jobId) {
   if(pollTimer) clearInterval(pollTimer);
   log(`Start polling ${jobId}`);
-  pollTimer = setInterval(async () => {
+  const poll = async () => {
     try {
       const res = await fetch(`/api/jobs/${jobId}`);
       if(!res.ok) throw new Error('job not found ' + res.status);
       const job = await res.json();
       const pct = job.progress || 0;
-      el('progressBar').style.width = `${pct}%`;
-      el('progressPct').textContent = `${pct}%`;
-      el('progressMsg').textContent = job.message || job.status;
+      const progressBar = el('progressBar');
+      if(progressBar) progressBar.style.width = `${pct}%`;
+      const progressPct = el('progressPct');
+      if(progressPct) progressPct.textContent = `${pct}%`;
+      const progressMsg = el('progressMsg');
+      if(progressMsg) progressMsg.textContent = job.message || job.status;
 
       if(job.analysis){
-        el('analysisBox').classList.remove('hidden');
-        el('aKey').textContent = job.analysis.key || '—';
-        el('aBpm').textContent = `${job.analysis.bpm || '—'} BPM`;
-        el('aRange').textContent = `${Math.round(job.analysis.f0_min_hz||0)}–${Math.round(job.analysis.f0_max_hz||0)} Hz`;
-        el('aLang').textContent = job.analysis.language || 'unknown';
+        const analysisBox = el('analysisBox');
+        if(analysisBox) analysisBox.classList.remove('hidden');
+        const aKey = el('aKey');
+        if(aKey) aKey.textContent = job.analysis.key || '—';
+        const aBpm = el('aBpm');
+        if(aBpm) aBpm.textContent = `${job.analysis.bpm || '—'} BPM`;
+        const aRange = el('aRange');
+        if(aRange) aRange.textContent = `${Math.round(job.analysis.f0_min_hz||0)}–${Math.round(job.analysis.f0_max_hz||0)} Hz`;
+        const aLang = el('aLang');
+        if(aLang) aLang.textContent = job.analysis.language || 'unknown';
       }
 
       if(job.status === 'completed'){
         clearInterval(pollTimer);
+        pollTimer = null;
         log(`Job ${jobId} completed`);
         showResult(job);
         loadJobs();
       } else if(job.status === 'failed'){
         clearInterval(pollTimer);
-        showError('Generation failed: ' + (job.error || job.message));
-        el('progressMsg').textContent = 'Failed: ' + (job.error || job.message);
-        el('progressBar').style.background = '#ef4444';
-        log(`Job failed: ${JSON.stringify(job).slice(0,1000)}`);
+        pollTimer = null;
+        const errMsg = job.error || job.message || 'unknown error';
+        showError('Generation failed: ' + errMsg);
+        if(progressMsg) progressMsg.textContent = 'Failed: ' + errMsg;
+        if(progressBar) progressBar.style.background = '#ef4444';
+        log(`Job failed: ${JSON.stringify(job).slice(0,1500)}`);
       }
     } catch(e){
       log('Poll error: ' + e.message);
     }
-  }, 1200);
+  };
+  poll();
+  pollTimer = setInterval(poll, 1200);
 }
 
 function showResult(job) {
-  el('resultCard').classList.remove('hidden');
+  const resultCard = el('resultCard');
+  if(resultCard) resultCard.classList.remove('hidden');
   const files = job.files || {};
-  el('resultMeta').textContent = `${job.analysis?.key || ''} • ${job.analysis?.bpm || ''} BPM • ${job.analysis?.duration_sec || ''}s • ${job.style}`;
+  const resultMeta = el('resultMeta');
+  if(resultMeta) resultMeta.textContent = `${job.analysis?.key || ''} • ${job.analysis?.bpm || ''} BPM • ${job.analysis?.duration_sec || ''}s • ${job.style} • v1.4 PERFECT-ALIGN`;
 
-  if(files.mp3){
-    el('finalAudio').src = files.mp3;
-    el('dlMp3').href = files.mp3;
+  const finalAudio = el('finalAudio');
+  if(finalAudio && files.mp3){
+    finalAudio.src = files.mp3;
   }
-  if(files.wav){
-    el('dlWav').href = files.wav;
+  const dlMp3 = el('dlMp3');
+  if(dlMp3 && files.mp3){
+    dlMp3.href = files.mp3;
   }
-  if(files.vocal){
-    el('vocalAudio').src = files.vocal;
+  const dlWav = el('dlWav');
+  if(dlWav && files.wav){
+    dlWav.href = files.wav;
   }
-  if(files.accompaniment){
-    el('accAudio').src = files.accompaniment;
+  const vocalAudio = el('vocalAudio');
+  if(vocalAudio && files.vocal){
+    vocalAudio.src = files.vocal;
   }
-  if(job.analysis?.lyrics_preview){
-    el('lyricsBox').classList.remove('hidden');
-    el('lyricsText').textContent = job.analysis.lyrics_preview;
+  const accAudio = el('accAudio');
+  if(accAudio && files.accompaniment){
+    accAudio.src = files.accompaniment;
   }
-  el('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const lyricsBox = el('lyricsBox');
+  const lyricsText = el('lyricsText');
+  if(job.analysis?.lyrics_preview && lyricsBox && lyricsText){
+    lyricsBox.classList.remove('hidden');
+    lyricsText.textContent = job.analysis.lyrics_preview;
+  }
+  if(resultCard) resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function loadJobs(){
   try{
     const res = await fetch('/api/jobs?limit=10');
+    if(!res.ok) throw new Error('failed ' + res.status);
     const data = await res.json();
     const list = el('jobsList');
+    if(!list) return;
     if(!data.jobs || data.jobs.length===0){
       list.textContent = 'No songs yet — be the first!';
       return;
@@ -201,14 +275,16 @@ async function loadJobs(){
       div.innerHTML = `<div class="truncate"><span>${statusDot}</span> <span class="font-medium">${j.job_id.slice(0,8)}</span> <span class="text-zinc-400">${j.style||''} ${j.analysis? j.analysis.key:''}</span></div><div class="text-[10px]">${j.progress||0}%</div>`;
       div.onclick = ()=>{
         currentJobId = j.job_id;
-        el('progressCard').classList.remove('hidden');
+        const progressCard = el('progressCard');
+        if(progressCard) progressCard.classList.remove('hidden');
         if(j.status==='completed') showResult(j);
         else pollJob(j.job_id);
       };
       list.appendChild(div);
     });
   }catch(e){
-    el('jobsList').textContent = 'Failed to load: ' + e.message;
+    const list = el('jobsList');
+    if(list) list.textContent = 'Failed to load: ' + e.message;
     log('loadJobs failed: ' + e.message);
   }
 }
@@ -219,18 +295,21 @@ async function toggleRecord(){
   const hint = el('recHint');
   if(mediaRecorder && mediaRecorder.state === 'recording'){
     mediaRecorder.stop();
-    btn.textContent = '●';
-    btn.className = 'w-14 h-14 rounded-full bg-gradient-to-br from-red-500 to-pink-500 text-white text-xl flex items-center justify-center shadow-lg hover:scale-105 transition';
-    status.textContent = 'processing';
-    status.className = 'text-[10px] mono px-2 py-1 rounded-full bg-zinc-100';
+    if(btn){
+      btn.textContent = '●';
+      btn.className = 'w-14 h-14 rounded-full bg-gradient-to-br from-red-500 to-pink-500 text-white text-xl flex items-center justify-center shadow-lg hover:scale-105 transition';
+    }
+    if(status){
+      status.textContent = 'processing';
+      status.className = 'text-[10px] mono px-2 py-1 rounded-full bg-zinc-100';
+    }
     clearInterval(recTimerInterval);
     log('Recording stopped');
     return;
   }
 
-  // Check support
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    showError('Recording not supported in this browser/iframe. Please use upload instead, or open preview in new tab.');
+    showError('Recording not supported in this browser/iframe. Please use upload instead, or open preview in new tab (pop-out icon).');
     log('mediaDevices not available');
     return;
   }
@@ -240,7 +319,10 @@ async function toggleRecord(){
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true } });
     log('Microphone granted');
     recChunks = [];
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+    let mimeType = 'audio/webm';
+    if(MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mimeType = 'audio/webm;codecs=opus';
+    else if(MediaRecorder.isTypeSupported('audio/webm')) mimeType = 'audio/webm';
+    else if(MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
     log('Using mimeType: ' + mimeType);
     mediaRecorder = new MediaRecorder(stream, { mimeType });
     mediaRecorder.ondataavailable = e=>{ if(e.data.size>0) recChunks.push(e.data); log(`Chunk ${e.data.size} bytes`); };
@@ -249,31 +331,43 @@ async function toggleRecord(){
       const blob = new Blob(recChunks, { type: mediaRecorder.mimeType });
       const url = URL.createObjectURL(blob);
       const preview = el('recPreview');
-      preview.src = url;
-      preview.classList.remove('hidden');
+      if(preview){
+        preview.src = url;
+        preview.classList.remove('hidden');
+      }
       const file = new File([blob], `recording_${Date.now()}.webm`, { type: blob.type });
       setFile(file, file.name);
-      status.textContent = 'ready';
-      hint.textContent = 'Recording ready — hit Generate!';
+      if(status){
+        status.textContent = 'ready';
+      }
+      if(hint){
+        hint.textContent = 'Recording ready — hit Generate!';
+      }
       stream.getTracks().forEach(t=>t.stop());
       log(`Recording blob ${blob.size} bytes ready`);
     };
     mediaRecorder.start(100);
     recStartTime = Date.now();
-    btn.textContent = '■';
-    btn.className = 'w-14 h-14 rounded-full bg-zinc-900 text-white text-xl flex items-center justify-center shadow-lg animate-pulse';
-    status.textContent = 'recording';
-    status.className = 'text-[10px] mono px-2 py-1 rounded-full bg-red-100 text-red-600';
-    hint.textContent = 'Recording... sing now!';
+    if(btn){
+      btn.textContent = '■';
+      btn.className = 'w-14 h-14 rounded-full bg-zinc-900 text-white text-xl flex items-center justify-center shadow-lg animate-pulse';
+    }
+    if(status){
+      status.textContent = 'recording';
+      status.className = 'text-[10px] mono px-2 py-1 rounded-full bg-red-100 text-red-600';
+    }
+    if(hint){
+      hint.textContent = 'Recording... sing now!';
+    }
 
     recTimerInterval = setInterval(()=>{
       const elapsed = Math.floor((Date.now()-recStartTime)/1000);
       const mm = String(Math.floor(elapsed/60)).padStart(2,'0');
       const ss = String(elapsed%60).padStart(2,'0');
-      el('recTimer').textContent = `${mm}:${ss}`;
+      const timer = el('recTimer');
+      if(timer) timer.textContent = `${mm}:${ss}`;
     }, 500);
 
-    // Visualizer
     try{
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaStreamSource(stream);
@@ -281,7 +375,8 @@ async function toggleRecord(){
       analyser.fftSize = 256;
       source.connect(analyser);
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      const bars = el('liveBars').children;
+      const barsContainer = el('liveBars');
+      const bars = barsContainer ? barsContainer.children : [];
       const loop = ()=>{
         if(!mediaRecorder || mediaRecorder.state !== 'recording'){ try{audioCtx.close();}catch{} return; }
         analyser.getByteFrequencyData(dataArray);
@@ -297,83 +392,183 @@ async function toggleRecord(){
       log('Visualizer failed: ' + e.message);
     }
   }catch(e){
-    const msg = e.name === 'NotAllowedError' ? 'Microphone permission denied. Please allow mic and try again. In Arena preview iframe, you may need to open in new tab.' : e.message;
+    const msg = e.name === 'NotAllowedError' ? 'Microphone permission denied. Please allow mic and try again. In Arena preview iframe, you may need to open in new tab (pop-out icon at top right of preview).' : e.message;
     showError('Microphone error: ' + msg);
     log('getUserMedia failed: ' + e.name + ' ' + e.message);
-    el('recStatus').textContent = 'blocked';
-    el('recHint').textContent = 'Mic blocked — use upload or open preview in new tab.';
+    const recStatus = el('recStatus');
+    if(recStatus) recStatus.textContent = 'blocked';
+    const recHint = el('recHint');
+    if(recHint) recHint.textContent = 'Mic blocked — use upload or open preview in new tab.';
   }
 }
 
+function setupUploadHandlers(){
+  const drop = el('dropZone');
+  const fileInput = el('fileInput');
+  const fallbackInput = el('fileInputFallback');
+  const browseBtn = el('browseBtn');
+  const browseBtn2 = el('browseBtn2');
+
+  log('Setting up upload handlers...');
+
+  const openPicker = (e) => {
+    if(e){
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    log('Browse clicked, opening file picker');
+    if(fileInput){
+      fileInput.click();
+    } else {
+      log('fileInput not found!');
+      showError('File input not found — try fallback upload at /test-upload');
+    }
+  };
+
+  if(drop){
+    drop.addEventListener('click', openPicker);
+    // Drag & drop
+    ['dragenter','dragover'].forEach(ev=>{
+      drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.add('border-purple-500','bg-purple-50'); });
+    });
+    ['dragleave','drop'].forEach(ev=>{
+      drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.remove('border-purple-500','bg-purple-50'); });
+    });
+    drop.addEventListener('drop', e=>{
+      e.preventDefault();
+      e.stopPropagation();
+      const f = e.dataTransfer.files[0];
+      log(`Drop: ${f?f.name + ' ' + f.size + ' ' + f.type:'no file'}`);
+      if(f){
+        if(!f.type.startsWith('audio/') && !f.type.startsWith('video/') && !/\.(mp3|wav|m4a|mp4|webm|ogg|flac|mov|aac|opus)$/i.test(f.name)){
+          showError(`Unsupported file type: ${f.type||f.name}. Try MP3, WAV, M4A, MP4, WebM.`);
+          return;
+        }
+        setFile(f, f.name);
+      }
+    });
+    log('Drop zone handlers attached');
+  } else {
+    log('dropZone not found!');
+  }
+
+  if(browseBtn){
+    browseBtn.addEventListener('click', openPicker);
+    log('browseBtn handler attached');
+  }
+  if(browseBtn2){
+    browseBtn2.addEventListener('click', openPicker);
+    log('browseBtn2 handler attached');
+  }
+
+  if(fileInput){
+    fileInput.addEventListener('change', ()=>{
+      log(`File input change: ${fileInput.files.length} files`);
+      if(fileInput.files && fileInput.files[0]){
+        const f = fileInput.files[0];
+        log(`Selected: ${f.name} ${f.size} ${f.type}`);
+        setFile(f, f.name);
+      } else {
+        log('File input change but no files');
+      }
+    });
+    log('fileInput change handler attached');
+  } else {
+    log('fileInput not found for change handler');
+  }
+
+  if(fallbackInput){
+    fallbackInput.addEventListener('change', ()=>{
+      log(`Fallback input change: ${fallbackInput.files.length} files`);
+      if(fallbackInput.files && fallbackInput.files[0]){
+        setFile(fallbackInput.files[0], fallbackInput.files[0].name);
+      }
+    });
+  }
+
+  const clearBtn = el('clearFile');
+  if(clearBtn){
+    clearBtn.onclick = clearFile;
+  }
+
+  const genBtn = el('generateBtn');
+  if(genBtn){
+    genBtn.onclick = uploadAndGenerate;
+    log('Generate button handler attached');
+  } else {
+    log('generateBtn not found!');
+  }
+
+  const recBtn = el('recBtn');
+  if(recBtn){
+    recBtn.onclick = toggleRecord;
+  }
+
+  const refreshBtn = el('refreshJobs');
+  if(refreshBtn){
+    refreshBtn.onclick = loadJobs;
+  }
+
+  const newSongBtn = el('newSongBtn');
+  if(newSongBtn){
+    newSongBtn.onclick = ()=>{
+      clearFile();
+      const progressCard = el('progressCard');
+      if(progressCard) progressCard.classList.add('hidden');
+      const resultCard = el('resultCard');
+      if(resultCard) resultCard.classList.add('hidden');
+      hideError();
+      window.scrollTo({ top:0, behavior:'smooth' });
+    };
+  }
+
+  const shareBtn = el('shareBtn');
+  if(shareBtn){
+    shareBtn.onclick = ()=>{
+      if(!currentJobId) return;
+      const url = `${location.origin}/api/jobs/${currentJobId}/files/final.mp3`;
+      if(navigator.share){
+        navigator.share({ title: 'My SingSmith song', url }).catch(()=>{});
+      } else {
+        navigator.clipboard.writeText(url).then(()=>alert('Link copied: ' + url)).catch(()=>alert(url));
+      }
+    };
+  }
+
+  log('All upload handlers setup done');
+}
+
 document.addEventListener('DOMContentLoaded', ()=>{
-  log(`Frontend loaded. Origin: ${location.origin} Host: ${location.host} Protocol: ${location.protocol}`);
-  el('originInfo').textContent = `Origin: ${location.origin} | If recording fails, open this URL in new tab and allow mic. Upload always works.`;
+  log(`Frontend v1.4 loaded. Origin: ${location.origin} Host: ${location.host} Protocol: ${location.protocol} UserAgent: ${navigator.userAgent.slice(0,100)}`);
+  const originInfo = el('originInfo');
+  if(originInfo){
+    originInfo.textContent = `Origin: ${location.origin} | v1.4 PERFECT-ALIGN | If recording fails, open this URL in new tab and allow mic. Upload always works.`;
+  }
 
   initStylePicker();
   initLiveBars();
   loadJobs();
-
-  const drop = el('dropZone');
-  const fileInput = el('fileInput');
-
-  // Make sure click on dropZone opens file picker even if event bubbles
-  const openPicker = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    fileInput.click();
-  };
-  drop.addEventListener('click', openPicker);
-
-  fileInput.addEventListener('change', ()=>{
-    log(`File input change: ${fileInput.files.length} files`);
-    if(fileInput.files && fileInput.files[0]){
-      setFile(fileInput.files[0], fileInput.files[0].name);
-    }
-  });
-
-  // Drag & drop
-  ['dragenter','dragover'].forEach(ev=>{
-    drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.add('border-purple-500','bg-purple-50'); });
-  });
-  ['dragleave','drop'].forEach(ev=>{
-    drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.remove('border-purple-500','bg-purple-50'); });
-  });
-  drop.addEventListener('drop', e=>{
-    e.preventDefault();
-    e.stopPropagation();
-    const f = e.dataTransfer.files[0];
-    log(`Drop: ${f?f.name:'no file'}`);
-    if(f){
-      // Validate type
-      if(!f.type.startsWith('audio/') && !f.type.startsWith('video/') && !/\.(mp3|wav|m4a|mp4|webm|ogg|flac|mov|aac|opus)$/i.test(f.name)){
-        showError(`Unsupported file type: ${f.type||f.name}. Try MP3, WAV, M4A, MP4, WebM.`);
-        return;
-      }
-      setFile(f, f.name);
-    }
-  });
-
-  el('clearFile').onclick = clearFile;
-  el('generateBtn').onclick = uploadAndGenerate;
-  el('recBtn').onclick = toggleRecord;
-  el('refreshJobs').onclick = loadJobs;
-  el('newSongBtn').onclick = ()=>{
-    clearFile();
-    el('progressCard').classList.add('hidden');
-    el('resultCard').classList.add('hidden');
-    hideError();
-    window.scrollTo({ top:0, behavior:'smooth' });
-  };
-  el('shareBtn').onclick = ()=>{
-    if(!currentJobId) return;
-    const url = `${location.origin}/api/jobs/${currentJobId}/files/final.mp3`;
-    if(navigator.share){
-      navigator.share({ title: 'My SingSmith song', url }).catch(()=>{});
-    } else {
-      navigator.clipboard.writeText(url).then(()=>alert('Link copied: ' + url)).catch(()=>alert(url));
-    }
-  };
+  setupUploadHandlers();
 
   // Test API connectivity
-  fetch('/api/health').then(r=>r.json()).then(j=>log('API health: ' + JSON.stringify(j))).catch(e=>{ showError('API not reachable: ' + e.message); log('Health check failed: ' + e.message); });
+  fetch('/api/health').then(r=>r.json()).then(j=>{
+    log('API health: ' + JSON.stringify(j));
+    // Show generator version in UI
+    const footer = document.querySelector('footer');
+    if(footer && j.generator){
+      footer.innerHTML += ` • Generator: ${j.generator}`;
+    }
+  }).catch(e=>{ 
+    showError('API not reachable: ' + e.message + ' — backend may not be running. Run: python -m uvicorn api.main:app --host 0.0.0.0 --port 8000'); 
+    log('Health check failed: ' + e.message);
+  });
+
+  // Also test if file input works
+  const fileInput = el('fileInput');
+  if(fileInput){
+    log('File input element found, accept=' + fileInput.accept);
+  } else {
+    log('CRITICAL: fileInput element NOT found in DOM!');
+    showError('Upload input not found — try /test-upload fallback or reload page');
+  }
 });
