@@ -131,3 +131,71 @@ def mix_vocal_and_accompaniment(vocal_path: Path, acc_path: Path, out_path: Path
 
     print(f"[mix] Vocal preserved: original peak {np.max(np.abs(vocal_original)):.3f}, mix peak {np.max(np.abs(mix)):.3f}, acc ducked")
     return out_path, vocal_out, acc_out
+
+def mix_with_custom_gains(vocal_path: Path, acc_path: Path, out_path: Path, vocal_gain: float = 1.0, acc_gain: float = 0.35, master_gain: float = 1.0, apply_ducking: bool = True):
+    """
+    v1.6: Mix with user-controlled gains for real-time volume control.
+    vocal_gain: 0.0-2.0 (0% to 200%)
+    acc_gain: 0.0-2.0
+    master_gain: 0.0-2.0
+    Returns mixed file path.
+    """
+    vocal_original, sr_v = load_stereo(vocal_path)
+    acc, sr_a = load_stereo(acc_path)
+
+    sr = sr_v
+
+    vocal_len = len(vocal_original)
+    acc_len = len(acc)
+    desired_len = vocal_len + int(sr*1.0)
+    if acc_len > desired_len:
+        acc = acc[:desired_len]
+        final_len = desired_len
+    else:
+        final_len = max(vocal_len, acc_len)
+        if acc_len < final_len:
+            pad = np.zeros((final_len - acc_len, 2), dtype=np.float32)
+            acc = np.concatenate([acc, pad], axis=0)
+
+    if vocal_len < final_len:
+        pad = np.zeros((final_len - vocal_len, 2), dtype=np.float32)
+        vocal_padded = np.concatenate([vocal_original, pad], axis=0)
+    else:
+        vocal_padded = vocal_original[:final_len]
+
+    vocal_for_mix = vocal_padded.copy()
+
+    if apply_ducking:
+        vocal_mono = np.mean(vocal_for_mix, axis=1)
+        env = envelope_follower(vocal_mono, sr, attack_ms=5, release_ms=150)
+        env_norm = env / (np.max(env) + 1e-6)
+        duck_gain = 1.0 - 0.41 * np.clip(env_norm, 0, 1)
+        acc = acc * duck_gain[:, None]
+
+    # Apply user gains
+    # Vocal gain: directly scales vocal (user control)
+    # Acc gain: scales accompaniment (default 0.35 = -9dB, now user controllable)
+    # Master gain: final output gain
+    vocal_scaled = vocal_for_mix * vocal_gain
+    acc_scaled = acc * acc_gain
+
+    mix = vocal_scaled + acc_scaled
+    mix = mix * master_gain
+
+    # Prevent clipping with soft limiter
+    peak = np.max(np.abs(mix))
+    if peak > 0.98:
+        # Soft limiter
+        abs_mix = np.abs(mix)
+        mask = abs_mix > 0.95
+        if np.any(mask):
+            mix[mask] = np.sign(mix[mask]) * (0.95 + 0.05 * np.tanh((abs_mix[mask]-0.95)/0.05))
+        # If still over, hard limit
+        peak2 = np.max(np.abs(mix))
+        if peak2 > 0.99:
+            mix = mix * (0.99 / peak2)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(out_path), mix, sr)
+    print(f"[mix-custom] vocal_gain={vocal_gain:.2f} acc_gain={acc_gain:.2f} master={master_gain:.2f} peak {np.max(np.abs(mix)):.3f} -> {out_path}")
+    return out_path

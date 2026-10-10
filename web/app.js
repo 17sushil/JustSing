@@ -1,4 +1,4 @@
-/* SingSmith Frontend v1.4 — FIXED upload + perfect-align backend */
+/* SingSmith Frontend v1.6 — REAL PIANO + VOLUME MIXER */
 const STYLES = [
   { id: 'warm-acoustic', name: 'Warm Acoustic', desc: 'Guitar + soft drums', emoji: '🎸' },
   { id: 'lofi-chill', name: 'LoFi Chill', desc: 'Mellow, vinyl crackle', emoji: '🌙' },
@@ -16,16 +16,27 @@ let mediaRecorder = null;
 let recStartTime = null;
 let recTimerInterval = null;
 
+// Volume mixer state
+let audioCtx = null;
+let vocalBuffer = null;
+let accBuffer = null;
+let vocalGainNode = null;
+let accGainNode = null;
+let masterGainNode = null;
+let isMixerReady = false;
+let currentSources = [];
+
 const el = (id) => document.getElementById(id);
 const log = (msg) => {
   console.log(msg);
   const d = el('debugLog');
   if(d){
-    d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + d.textContent.slice(0,4000);
+    d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + d.textContent.slice(0,5000);
   }
 };
 const showError = (msg) => {
   const box = el('errorBox');
+  if(!box) return;
   box.textContent = msg;
   box.classList.remove('hidden');
   log('ERROR: ' + msg);
@@ -114,7 +125,6 @@ async function uploadAndGenerate() {
   }
   hideError();
   const fd = new FormData();
-  // Ensure file has a name
   const fileName = selectedFile.name || `upload_${Date.now()}.webm`;
   fd.append('file', selectedFile, fileName);
   fd.append('style', selectedStyle);
@@ -220,12 +230,334 @@ function pollJob(jobId) {
   pollTimer = setInterval(poll, 1200);
 }
 
+// VOLUME MIXER v1.6
+async function initVolumeMixer(vocalUrl, accUrl) {
+  log(`Init volume mixer: vocal=${vocalUrl.slice(0,60)}... acc=${accUrl.slice(0,60)}...`);
+  const status = el('customMixStatus');
+  if(status) status.textContent = 'Loading stems for mixer...';
+  
+  try {
+    if(!audioCtx){
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      log('AudioContext created: ' + audioCtx.sampleRate + 'Hz');
+    }
+    
+    // Fetch and decode both
+    const [vocalResp, accResp] = await Promise.all([
+      fetch(vocalUrl),
+      fetch(accUrl)
+    ]);
+    
+    if(!vocalResp.ok || !accResp.ok){
+      throw new Error(`Failed to fetch stems: vocal ${vocalResp.status}, acc ${accResp.status}`);
+    }
+    
+    const [vocalArrayBuf, accArrayBuf] = await Promise.all([
+      vocalResp.arrayBuffer(),
+      accResp.arrayBuffer()
+    ]);
+    
+    log(`Fetched stems: vocal ${vocalArrayBuf.byteLength} bytes, acc ${accArrayBuf.byteLength} bytes, decoding...`);
+    
+    const [vocalBuf, accBuf] = await Promise.all([
+      audioCtx.decodeAudioData(vocalArrayBuf.slice(0)),
+      audioCtx.decodeAudioData(accArrayBuf.slice(0))
+    ]);
+    
+    vocalBuffer = vocalBuf;
+    accBuffer = accBuf;
+    
+    log(`Decoded: vocal ${vocalBuf.duration.toFixed(2)}s ${vocalBuf.numberOfChannels}ch, acc ${accBuf.duration.toFixed(2)}s ${accBuf.numberOfChannels}ch`);
+    
+    // Create gain nodes
+    vocalGainNode = audioCtx.createGain();
+    accGainNode = audioCtx.createGain();
+    masterGainNode = audioCtx.createGain();
+    
+    vocalGainNode.gain.value = 1.0;
+    accGainNode.gain.value = 0.35;
+    masterGainNode.gain.value = 1.0;
+    
+    vocalGainNode.connect(masterGainNode);
+    accGainNode.connect(masterGainNode);
+    masterGainNode.connect(audioCtx.destination);
+    
+    isMixerReady = true;
+    log('Volume mixer ready! Adjust sliders for real-time mixing');
+    if(status) status.textContent = 'Mixer ready — adjust sliders for real-time preview';
+    
+    // Setup slider listeners
+    setupMixerSliders();
+    
+    // Create initial mixed preview file via offline rendering
+    await renderMixedPreview();
+    
+  } catch(e) {
+    log('Mixer init failed: ' + e.message + '\n' + (e.stack||'').slice(0,1000));
+    if(status) status.textContent = 'Mixer load failed: ' + e.message + ' — you can still download stems';
+    isMixerReady = false;
+  }
+}
+
+function setupMixerSliders() {
+  const vocalSlider = el('vocalGainSlider');
+  const accSlider = el('accGainSlider');
+  const masterSlider = el('masterGainSlider');
+  const vocalLabel = el('vocalGainLabel');
+  const accLabel = el('accGainLabel');
+  const masterLabel = el('masterGainLabel');
+  
+  if(!vocalSlider || !accSlider || !masterSlider) {
+    log('Mixer sliders not found');
+    return;
+  }
+  
+  const updateVocal = () => {
+    const val = parseInt(vocalSlider.value);
+    const gain = val / 100;
+    if(vocalLabel) vocalLabel.textContent = val + '%';
+    if(vocalGainNode) vocalGainNode.gain.value = gain;
+    log(`Vocal gain: ${val}% (${gain.toFixed(2)})`);
+    // Debounce preview render
+    debounceRenderPreview();
+  };
+  
+  const updateAcc = () => {
+    const val = parseInt(accSlider.value);
+    const gain = val / 100;
+    if(accLabel) accLabel.textContent = val + '%';
+    if(accGainNode) accGainNode.gain.value = gain;
+    log(`Track gain: ${val}% (${gain.toFixed(2)})`);
+    debounceRenderPreview();
+  };
+  
+  const updateMaster = () => {
+    const val = parseInt(masterSlider.value);
+    const gain = val / 100;
+    if(masterLabel) masterLabel.textContent = val + '%';
+    if(masterGainNode) masterGainNode.gain.value = gain;
+    log(`Master gain: ${val}% (${gain.toFixed(2)})`);
+    debounceRenderPreview();
+  };
+  
+  vocalSlider.addEventListener('input', updateVocal);
+  accSlider.addEventListener('input', updateAcc);
+  masterSlider.addEventListener('input', updateMaster);
+  
+  const resetBtn = el('resetMixerBtn');
+  if(resetBtn){
+    resetBtn.onclick = () => {
+      vocalSlider.value = 100;
+      accSlider.value = 35;
+      masterSlider.value = 100;
+      updateVocal();
+      updateAcc();
+      updateMaster();
+      log('Mixer reset to defaults: vocal 100%, track 35%, master 100%');
+    };
+  }
+  
+  log('Mixer sliders listeners attached');
+}
+
+let renderDebounceTimer = null;
+function debounceRenderPreview() {
+  if(renderDebounceTimer) clearTimeout(renderDebounceTimer);
+  renderDebounceTimer = setTimeout(() => {
+    renderMixedPreview();
+  }, 500);
+}
+
+async function renderMixedPreview() {
+  if(!isMixerReady || !vocalBuffer || !accBuffer || !audioCtx) {
+    log('renderMixedPreview: not ready');
+    return;
+  }
+  
+  const vocalSlider = el('vocalGainSlider');
+  const accSlider = el('accGainSlider');
+  const masterSlider = el('masterGainSlider');
+  
+  const vocalGain = vocalSlider ? parseInt(vocalSlider.value)/100 : 1.0;
+  const accGain = accSlider ? parseInt(accSlider.value)/100 : 0.35;
+  const masterGain = masterSlider ? parseInt(masterSlider.value)/100 : 1.0;
+  
+  log(`Rendering mixed preview: vocal ${vocalGain.toFixed(2)}, acc ${accGain.toFixed(2)}, master ${masterGain.toFixed(2)}`);
+  
+  try {
+    // Use OfflineAudioContext to render mixed buffer
+    const duration = Math.max(vocalBuffer.duration, accBuffer.duration);
+    const sampleRate = audioCtx.sampleRate;
+    const offlineCtx = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
+    
+    // Create sources
+    const vocalSrc = offlineCtx.createBufferSource();
+    vocalSrc.buffer = vocalBuffer;
+    const vocalGainNodeOffline = offlineCtx.createGain();
+    vocalGainNodeOffline.gain.value = vocalGain;
+    vocalSrc.connect(vocalGainNodeOffline);
+    
+    const accSrc = offlineCtx.createBufferSource();
+    accSrc.buffer = accBuffer;
+    const accGainNodeOffline = offlineCtx.createGain();
+    accGainNodeOffline.gain.value = accGain;
+    accSrc.connect(accGainNodeOffline);
+    
+    const masterGainOffline = offlineCtx.createGain();
+    masterGainOffline.gain.value = masterGain;
+    
+    vocalGainNodeOffline.connect(masterGainOffline);
+    accGainNodeOffline.connect(masterGainOffline);
+    masterGainOffline.connect(offlineCtx.destination);
+    
+    vocalSrc.start(0);
+    accSrc.start(0);
+    
+    const renderedBuffer = await offlineCtx.startRendering();
+    log(`Offline rendered: ${renderedBuffer.duration.toFixed(2)}s`);
+    
+    // Convert to WAV blob for preview
+    const wavBlob = bufferToWavBlob(renderedBuffer);
+    const url = URL.createObjectURL(wavBlob);
+    const previewAudio = el('mixedPreviewAudio');
+    if(previewAudio){
+      previewAudio.src = url;
+      // Don't auto-play, let user click play
+    }
+    
+    // Store for download (optional client-side download)
+    window._lastMixedWavBlob = wavBlob;
+    window._lastMixedGains = { vocalGain, accGain, masterGain };
+    
+  } catch(e) {
+    log('renderMixedPreview failed: ' + e.message);
+  }
+}
+
+function bufferToWavBlob(buffer) {
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const length = buffer.length;
+  const interleaved = new Float32Array(length * numChannels);
+  
+  for(let ch=0; ch<numChannels; ch++){
+    const channelData = buffer.getChannelData(ch);
+    for(let i=0; i<length; i++){
+      interleaved[i*numChannels + ch] = channelData[i];
+    }
+  }
+  
+  // Convert float to 16-bit PCM
+  const wavLength = 44 + interleaved.length * 2;
+  const wavBuffer = new ArrayBuffer(wavLength);
+  const view = new DataView(wavBuffer);
+  
+  // WAV header
+  const writeString = (offset, str) => {
+    for(let i=0;i<str.length;i++) view.setUint8(offset+i, str.charCodeAt(i));
+  };
+  
+  writeString(0, 'RIFF');
+  view.setUint32(4, wavLength-8, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * 2, true);
+  view.setUint16(32, numChannels * 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, 'data');
+  view.setUint32(40, interleaved.length * 2, true);
+  
+  let offset = 44;
+  for(let i=0;i<interleaved.length;i++){
+    const s = Math.max(-1, Math.min(1, interleaved[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    offset += 2;
+  }
+  
+  return new Blob([view], { type: 'audio/wav' });
+}
+
+async function renderCustomMixOnServer() {
+  if(!currentJobId){
+    showError('No job ID for custom mix');
+    return;
+  }
+  
+  const vocalSlider = el('vocalGainSlider');
+  const accSlider = el('accGainSlider');
+  const masterSlider = el('masterGainSlider');
+  const status = el('customMixStatus');
+  const resultDiv = el('customMixResult');
+  
+  const vocalGain = vocalSlider ? parseInt(vocalSlider.value)/100 : 1.0;
+  const accGain = accSlider ? parseInt(accSlider.value)/100 : 0.35;
+  const masterGain = masterSlider ? parseInt(masterSlider.value)/100 : 1.0;
+  
+  log(`Requesting server custom mix: vocal ${vocalGain}, acc ${accGain}, master ${masterGain} for job ${currentJobId}`);
+  if(status) status.textContent = `Rendering custom mix on server: vocal ${Math.round(vocalGain*100)}% acc ${Math.round(accGain*100)}% master ${Math.round(masterGain*100)}%...`;
+  
+  try {
+    const fd = new FormData();
+    fd.append('vocal_gain', vocalGain.toString());
+    fd.append('acc_gain', accGain.toString());
+    fd.append('master_gain', masterGain.toString());
+    
+    const res = await fetch(`/api/jobs/${currentJobId}/mix-custom`, {
+      method: 'POST',
+      body: fd
+    });
+    
+    const text = await res.text();
+    log(`Custom mix response ${res.status}: ${text.slice(0,800)}`);
+    
+    if(!res.ok){
+      throw new Error(`Server mix failed ${res.status}: ${text.slice(0,500)}`);
+    }
+    
+    const data = JSON.parse(text);
+    log(`Custom mix success: ${JSON.stringify(data).slice(0,500)}`);
+    
+    if(resultDiv) resultDiv.classList.remove('hidden');
+    const customAudio = el('customMixAudio');
+    if(customAudio && data.files){
+      customAudio.src = data.files.mp3 || data.files.wav;
+    }
+    const dlMp3 = el('dlCustomMp3');
+    if(dlMp3 && data.files){
+      dlMp3.href = data.files.mp3 || data.files.wav;
+      dlMp3.download = `custom_mix_v${Math.round(vocalGain*100)}_a${Math.round(accGain*100)}_m${Math.round(masterGain*100)}.mp3`;
+    }
+    const dlWav = el('dlCustomWav');
+    if(dlWav && data.files){
+      dlWav.href = data.files.wav;
+      dlWav.download = `custom_mix_v${Math.round(vocalGain*100)}_a${Math.round(accGain*100)}_m${Math.round(masterGain*100)}.wav`;
+    }
+    
+    if(status) status.textContent = `Custom mix ready! Vocal ${Math.round(vocalGain*100)}% Track ${Math.round(accGain*100)}% Master ${Math.round(masterGain*100)}%`;
+    
+    // Also offer client-side WAV download as fallback
+    if(window._lastMixedWavBlob){
+      const clientUrl = URL.createObjectURL(window._lastMixedWavBlob);
+      log('Client-side WAV also available: ' + clientUrl.slice(0,60));
+    }
+    
+  } catch(e) {
+    log('Custom mix failed: ' + e.message);
+    if(status) status.textContent = 'Custom mix failed: ' + e.message;
+    showError('Custom mix failed: ' + e.message);
+  }
+}
+
 function showResult(job) {
   const resultCard = el('resultCard');
   if(resultCard) resultCard.classList.remove('hidden');
   const files = job.files || {};
   const resultMeta = el('resultMeta');
-  if(resultMeta) resultMeta.textContent = `${job.analysis?.key || ''} • ${job.analysis?.bpm || ''} BPM • ${job.analysis?.duration_sec || ''}s • ${job.style} • v1.4 PERFECT-ALIGN`;
+  if(resultMeta) resultMeta.textContent = `${job.analysis?.key || ''} • ${job.analysis?.bpm || ''} BPM • ${job.analysis?.duration_sec || ''}s • ${job.style} • v1.6 REAL PIANO + MIXER`;
 
   const finalAudio = el('finalAudio');
   if(finalAudio && files.mp3){
@@ -247,12 +579,32 @@ function showResult(job) {
   if(accAudio && files.accompaniment){
     accAudio.src = files.accompaniment;
   }
+  const dlVocal = el('dlVocal');
+  if(dlVocal && files.vocal){
+    dlVocal.href = files.vocal;
+  }
+  const dlAcc = el('dlAcc');
+  if(dlAcc && files.accompaniment){
+    dlAcc.href = files.accompaniment;
+  }
   const lyricsBox = el('lyricsBox');
   const lyricsText = el('lyricsText');
   if(job.analysis?.lyrics_preview && lyricsBox && lyricsText){
     lyricsBox.classList.remove('hidden');
     lyricsText.textContent = job.analysis.lyrics_preview;
   }
+  
+  // Init volume mixer with stems
+  if(files.vocal && files.accompaniment){
+    log('Initializing volume mixer with stems...');
+    // Small delay to ensure audio elements loaded
+    setTimeout(() => {
+      initVolumeMixer(files.vocal, files.accompaniment);
+    }, 500);
+  } else {
+    log('No vocal/accompaniment stems for mixer, only final mix available');
+  }
+  
   if(resultCard) resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -369,16 +721,16 @@ async function toggleRecord(){
     }, 500);
 
     try{
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioCtx.createMediaStreamSource(stream);
-      const analyser = audioCtx.createAnalyser();
+      const audioCtxLocal = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtxLocal.createMediaStreamSource(stream);
+      const analyser = audioCtxLocal.createAnalyser();
       analyser.fftSize = 256;
       source.connect(analyser);
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       const barsContainer = el('liveBars');
       const bars = barsContainer ? barsContainer.children : [];
       const loop = ()=>{
-        if(!mediaRecorder || mediaRecorder.state !== 'recording'){ try{audioCtx.close();}catch{} return; }
+        if(!mediaRecorder || mediaRecorder.state !== 'recording'){ try{audioCtxLocal.close();}catch{} return; }
         analyser.getByteFrequencyData(dataArray);
         for(let i=0;i<bars.length;i++){
           const v = dataArray[i*2] / 255;
@@ -407,7 +759,6 @@ function setupUploadHandlers(){
   const fileInput = el('fileInput');
   const fallbackInput = el('fileInputFallback');
   const browseBtn = el('browseBtn');
-  const browseBtn2 = el('browseBtn2');
 
   log('Setting up upload handlers...');
 
@@ -427,7 +778,6 @@ function setupUploadHandlers(){
 
   if(drop){
     drop.addEventListener('click', openPicker);
-    // Drag & drop
     ['dragenter','dragover'].forEach(ev=>{
       drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.add('border-purple-500','bg-purple-50'); });
     });
@@ -448,17 +798,11 @@ function setupUploadHandlers(){
       }
     });
     log('Drop zone handlers attached');
-  } else {
-    log('dropZone not found!');
   }
 
   if(browseBtn){
     browseBtn.addEventListener('click', openPicker);
     log('browseBtn handler attached');
-  }
-  if(browseBtn2){
-    browseBtn2.addEventListener('click', openPicker);
-    log('browseBtn2 handler attached');
   }
 
   if(fileInput){
@@ -468,13 +812,9 @@ function setupUploadHandlers(){
         const f = fileInput.files[0];
         log(`Selected: ${f.name} ${f.size} ${f.type}`);
         setFile(f, f.name);
-      } else {
-        log('File input change but no files');
       }
     });
     log('fileInput change handler attached');
-  } else {
-    log('fileInput not found for change handler');
   }
 
   if(fallbackInput){
@@ -495,8 +835,6 @@ function setupUploadHandlers(){
   if(genBtn){
     genBtn.onclick = uploadAndGenerate;
     log('Generate button handler attached');
-  } else {
-    log('generateBtn not found!');
   }
 
   const recBtn = el('recBtn');
@@ -518,6 +856,16 @@ function setupUploadHandlers(){
       const resultCard = el('resultCard');
       if(resultCard) resultCard.classList.add('hidden');
       hideError();
+      // Stop mixer
+      if(currentSources){
+        currentSources.forEach(src => { try{src.stop();}catch{} });
+        currentSources = [];
+      }
+      if(audioCtx){
+        try{audioCtx.close();}catch{}
+        audioCtx = null;
+      }
+      isMixerReady = false;
       window.scrollTo({ top:0, behavior:'smooth' });
     };
   }
@@ -535,14 +883,20 @@ function setupUploadHandlers(){
     };
   }
 
+  const renderCustomBtn = el('renderCustomMixBtn');
+  if(renderCustomBtn){
+    renderCustomBtn.onclick = renderCustomMixOnServer;
+    log('Custom mix button handler attached');
+  }
+
   log('All upload handlers setup done');
 }
 
 document.addEventListener('DOMContentLoaded', ()=>{
-  log(`Frontend v1.4 loaded. Origin: ${location.origin} Host: ${location.host} Protocol: ${location.protocol} UserAgent: ${navigator.userAgent.slice(0,100)}`);
+  log(`Frontend v1.6 loaded. Origin: ${location.origin} Host: ${location.host} Protocol: ${location.protocol} UserAgent: ${navigator.userAgent.slice(0,100)}`);
   const originInfo = el('originInfo');
   if(originInfo){
-    originInfo.textContent = `Origin: ${location.origin} | v1.4 PERFECT-ALIGN | If recording fails, open this URL in new tab and allow mic. Upload always works.`;
+    originInfo.textContent = `Origin: ${location.origin} | v1.6 REAL PIANO + VOLUME MIXER | If recording fails, open this URL in new tab and allow mic.`;
   }
 
   initStylePicker();
@@ -550,20 +904,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
   loadJobs();
   setupUploadHandlers();
 
-  // Test API connectivity
   fetch('/api/health').then(r=>r.json()).then(j=>{
     log('API health: ' + JSON.stringify(j));
-    // Show generator version in UI
-    const footer = document.querySelector('footer');
-    if(footer && j.generator){
-      footer.innerHTML += ` • Generator: ${j.generator}`;
-    }
   }).catch(e=>{ 
     showError('API not reachable: ' + e.message + ' — backend may not be running. Run: python -m uvicorn api.main:app --host 0.0.0.0 --port 8000'); 
     log('Health check failed: ' + e.message);
   });
 
-  // Also test if file input works
   const fileInput = el('fileInput');
   if(fileInput){
     log('File input element found, accept=' + fileInput.accept);

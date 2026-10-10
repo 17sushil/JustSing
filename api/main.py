@@ -88,6 +88,86 @@ def get_job(job_id: str):
 def get_jobs(limit: int = 20):
     return {"jobs": list_jobs(limit)}
 
+@app.post("/api/jobs/{job_id}/mix-custom")
+async def mix_custom(
+    job_id: str,
+    vocal_gain: float = Form(1.0),
+    acc_gain: float = Form(0.35),
+    master_gain: float = Form(1.0),
+):
+    """v1.6: Mix with user-controlled gains, return new mixed file"""
+    st = read_status(job_id)
+    if st.get("status") == "not_found":
+        raise HTTPException(404, "Job not found")
+    if st.get("status") != "completed":
+        raise HTTPException(400, f"Job not completed yet, status={st.get('status')}")
+
+    # Clamp gains
+    vocal_gain = float(max(0.0, min(3.0, vocal_gain)))
+    acc_gain = float(max(0.0, min(3.0, acc_gain)))
+    master_gain = float(max(0.0, min(3.0, master_gain)))
+
+    rdir = render_dir(job_id)
+    # Find vocal and acc files
+    vocal_path = rdir / "vocal_final.wav"
+    if not vocal_path.exists():
+        vocal_path = rdir / "vocal_original_untouched.wav"
+    acc_path = rdir / "accompaniment_final.wav"
+    
+    if not vocal_path.exists() or not acc_path.exists():
+        # Try alternative locations
+        jdir = job_dir(job_id)
+        if not vocal_path.exists():
+            vocal_path = jdir / "vocal_final.wav"
+        if not acc_path.exists():
+            acc_path = jdir / "accompaniment_final.wav"
+    
+    if not vocal_path.exists():
+        raise HTTPException(404, f"Vocal file not found for job {job_id}")
+    if not acc_path.exists():
+        raise HTTPException(404, f"Accompaniment file not found for job {job_id}")
+
+    # Output path with gains in name
+    out_name = f"custom_mix_v{vocal_gain:.2f}_a{acc_gain:.2f}_m{master_gain:.2f}.wav"
+    out_path = rdir / out_name
+
+    try:
+        from .pipeline.mix import mix_with_custom_gains
+        mix_with_custom_gains(vocal_path, acc_path, out_path, vocal_gain=vocal_gain, acc_gain=acc_gain, master_gain=master_gain)
+        
+        # Also create mp3 version
+        mp3_name = out_name.replace(".wav", ".mp3")
+        mp3_path = rdir / mp3_name
+        try:
+            from .pipeline.master import master_audio
+            # Use master to convert to mp3? Actually master does loudnorm, we can just use ffmpeg
+            import subprocess
+            from .config import FFMPEG_BIN
+            subprocess.run([FFMPEG_BIN, "-y", "-i", str(out_path), "-b:a", "320k", str(mp3_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        except Exception as e:
+            print(f"[mix-custom] mp3 conversion failed {e}, using wav only")
+            mp3_path = out_path
+
+        # Return file URLs
+        base_url = f"/api/jobs/{job_id}/files"
+        return {
+            "job_id": job_id,
+            "vocal_gain": vocal_gain,
+            "acc_gain": acc_gain,
+            "master_gain": master_gain,
+            "files": {
+                "wav": f"{base_url}/{out_name}",
+                "mp3": f"{base_url}/{mp3_name}",
+                "custom_wav": f"{base_url}/{out_name}",
+                "custom_mp3": f"{base_url}/{mp3_name}",
+            },
+            "message": f"Mixed with vocal {vocal_gain:.2f}, acc {acc_gain:.2f}, master {master_gain:.2f}"
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Mix failed: {e}")
+
 @app.get("/api/jobs/{job_id}/files/{filename}")
 def get_file(job_id: str, filename: str):
     rdir = render_dir(job_id)

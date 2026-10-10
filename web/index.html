@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SingSmith v1.4 — Perfect Align</title>
+<title>SingSmith v1.6 — Real Piano + Volume Mixer</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
 <style>
@@ -13,6 +13,9 @@
   .glow { box-shadow: 0 0 40px rgba(168,85,247,0.20); }
   .shimmer { background: linear-gradient(90deg, #a855f7 0%, #ec4899 50%, #a855f7 100%); background-size: 200% 100%; animation: shimmer 2s linear infinite; }
   @keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+  input[type=range] { -webkit-appearance: none; appearance: none; height: 6px; background: #3f3f46; border-radius: 3px; outline: none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: white; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+  input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: white; cursor: pointer; border: none; }
 </style>
 </head>
 <body class="min-h-screen bg-[#fbf7ff] text-zinc-900 selection:bg-purple-200">
@@ -22,7 +25,7 @@
         <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-pink-500 flex items-center justify-center text-white font-bold text-lg">S</div>
         <div>
           <div class="font-bold text-[17px] leading-none">SingSmith</div>
-          <div class="text-[11px] tracking-widest uppercase text-zinc-500 mono">v1.4 PERFECT-ALIGN • Demucs + MusicGen</div>
+          <div class="text-[11px] tracking-widest uppercase text-zinc-500 mono">v1.6 REAL PIANO + VOLUME MIXER</div>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -32,11 +35,10 @@
     </div>
   </header>
 
-  <!-- Sandbox notice -->
   <div id="sandboxNotice" class="max-w-6xl mx-auto px-6 pt-4">
     <div class="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-xs leading-relaxed">
-      <b>v1.4 PERFECT-ALIGN:</b> Continuous 50ms pitch tracking, vocal-as-top-note chords, bass follows your pitch curve, drums on your onsets (80ms window), sidechain ducking, vocal glue octave.
-      <br><b>Upload fixed:</b> Click Browse or drag-drop. If still fails, use <a href="/test-upload" class="underline font-semibold">/test-upload</a> fallback.
+      <b>v1.6 REAL PIANO + VOLUME MIXER:</b> Real piano (8 harmonics, hammer noise), arpeggios not block chords, walking bass, plus real-time volume mixer — adjust vocal/track volume live and download at your preferred levels.
+      <br><b>Upload fixed:</b> Browse or drag-drop. If fails, use <a href="/test-upload" class="underline font-semibold">/test-upload</a>.
       <span id="originInfo" class="mono text-[10px] block mt-1 text-zinc-500"></span>
     </div>
   </div>
@@ -49,12 +51,12 @@
           Get a finished song.
         </h1>
         <p class="mt-4 text-zinc-600 leading-relaxed">
-          No instruments. No music theory. In <b>any language</b>. v1.4 tracks your pitch every 50ms — chords, bass & drums lock to <i>your</i> voice.
+          v1.6: Real piano synthesis, melodic arpeggios, walking bass, plus <b>volume mixer</b> — control vocal & track volume in real-time.
         </p>
         <div class="mt-3 flex flex-wrap gap-2 text-[11px] mono">
-          <span class="px-2.5 py-1 rounded-full bg-purple-100 text-purple-700">v1.4 perfect-align • $0</span>
-          <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700">Demucs vocal.ai • $0</span>
-          <span class="px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-600">MusicGen small • $0 real instruments</span>
+          <span class="px-2.5 py-1 rounded-full bg-purple-100 text-purple-700">v1.6 real piano • $0</span>
+          <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700">Volume mixer • real-time</span>
+          <span class="px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-600">MusicGen small • real instruments</span>
         </div>
       </div>
 
@@ -63,12 +65,10 @@
         <div id="stylePicker" class="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
       </div>
 
-      <!-- Error box -->
       <div id="errorBox" class="hidden rounded-xl bg-red-50 border border-red-200 p-3 text-xs text-red-700"></div>
 
       <div class="grid sm:grid-cols-2 gap-4">
         <div id="dropZone" class="group relative rounded-[20px] border-2 border-dashed border-purple-200 bg-white p-5 hover:border-purple-400 transition cursor-pointer glow">
-          <!-- Hidden primary input -->
           <input id="fileInput" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.webm,.ogg,.flac,.mov,.aac,.opus,.wma" class="hidden">
           <div class="flex flex-col items-center text-center py-3">
             <div class="w-12 h-12 rounded-full bg-purple-50 flex items-center justify-center text-2xl">🎤</div>
@@ -79,7 +79,7 @@
               <label class="text-[10px] mono text-zinc-400">Fallback browse (if button fails):</label>
               <input id="fileInputFallback" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.webm,.ogg,.flac,.mov,.aac" class="mt-1 block w-full text-[11px] mono file:mr-2 file:py-1 file:px-3 file:rounded-full file:border-0 file:bg-purple-100 file:text-purple-700 hover:file:bg-purple-200">
             </div>
-            <div class="text-[10px] mono mt-2 text-zinc-400">or use <a href="/test-upload" class="underline font-semibold">/test-upload</a> (no-JS, always works)</div>
+            <div class="text-[10px] mono mt-2 text-zinc-400">or use <a href="/test-upload" class="underline font-semibold">/test-upload</a> (no-JS)</div>
           </div>
         </div>
 
@@ -93,7 +93,7 @@
             <div class="flex-1">
               <div id="recTimer" class="mono text-sm">00:00</div>
               <div class="mt-2 h-[24px] flex items-end gap-[2px]" id="liveBars"></div>
-              <div id="recHint" class="text-[11px] text-zinc-500 mt-1">Needs mic permission. If blocked in iframe, open in new tab (pop-out icon).</div>
+              <div id="recHint" class="text-[11px] text-zinc-500 mt-1">Needs mic permission. If blocked in iframe, open in new tab.</div>
             </div>
           </div>
           <audio id="recPreview" controls class="w-full mt-3 hidden"></audio>
@@ -112,9 +112,8 @@
       <button id="generateBtn" disabled class="w-full h-[56px] rounded-full bg-zinc-300 text-zinc-500 font-semibold tracking-wide cursor-not-allowed transition flex items-center justify-center gap-2">
         <span>Select a file first</span>
       </button>
-      <div class="text-[11px] text-zinc-500 mono text-center">v1.4: 50ms continuous pitch tracking • vocal-as-top-note • bass follows curve • drums on 80ms onsets • sidechain duck • ~20-40 sec</div>
+      <div class="text-[11px] text-zinc-500 mono text-center">v1.6: real piano (8 harmonics) • arpeggios • walking bass • 50ms tracking • volume mixer • ~20-40 sec</div>
 
-      <!-- Debug console -->
       <details class="rounded-xl bg-zinc-50 border border-zinc-200 p-3" open>
         <summary class="text-xs mono cursor-pointer">Debug console (upload logs)</summary>
         <pre id="debugLog" class="mt-2 text-[10px] mono whitespace-pre-wrap max-h-48 overflow-auto bg-white p-2 rounded border">Waiting...</pre>
@@ -124,7 +123,7 @@
     <div class="space-y-6">
       <div id="progressCard" class="hidden rounded-[24px] bg-white border border-zinc-200 p-6 shadow-sm">
         <div class="flex items-center justify-between">
-          <div class="font-semibold">Crafting your song — v1.4 perfect-align</div>
+          <div class="font-semibold">Crafting your song — v1.6 real piano</div>
           <div id="progressPct" class="mono text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">0%</div>
         </div>
         <div class="mt-4 h-2 rounded-full bg-zinc-100 overflow-hidden">
@@ -142,20 +141,78 @@
       <div id="resultCard" class="hidden rounded-[24px] bg-zinc-900 text-white p-6 shadow-xl">
         <div class="flex items-center gap-2">
           <div class="w-8 h-8 rounded-full bg-white text-zinc-900 flex items-center justify-center font-bold">✓</div>
-          <div class="font-semibold">Your finished song is ready — v1.4 perfect-align</div>
+          <div class="font-semibold">Your song is ready — v1.6 real piano + mixer</div>
         </div>
         <div id="resultMeta" class="mt-3 text-xs mono text-zinc-400"></div>
+        
+        <!-- VOLUME MIXER - NEW in v1.6 -->
+        <div class="mt-5 rounded-2xl bg-zinc-800 p-4 border border-zinc-700">
+          <div class="flex items-center justify-between">
+            <div class="text-[11px] mono uppercase text-zinc-400">🎚️ Volume Mixer — Real-time control</div>
+            <button id="resetMixerBtn" class="text-[10px] mono px-2 py-1 rounded-full bg-zinc-700 hover:bg-zinc-600">Reset</button>
+          </div>
+          
+          <div class="mt-4 space-y-4">
+            <div>
+              <div class="flex items-center justify-between text-xs">
+                <span class="flex items-center gap-2"><span>🎤</span> Vocal</span>
+                <span id="vocalGainLabel" class="mono text-zinc-400">100%</span>
+              </div>
+              <input id="vocalGainSlider" type="range" min="0" max="200" value="100" class="w-full mt-2">
+              <div class="flex justify-between text-[10px] mono text-zinc-500"><span>0%</span><span>100%</span><span>200%</span></div>
+            </div>
+            
+            <div>
+              <div class="flex items-center justify-between text-xs">
+                <span class="flex items-center gap-2"><span>🎹</span> Track / Accompaniment</span>
+                <span id="accGainLabel" class="mono text-zinc-400">100%</span>
+              </div>
+              <input id="accGainSlider" type="range" min="0" max="200" value="35" class="w-full mt-2">
+              <div class="flex justify-between text-[10px] mono text-zinc-500"><span>0%</span><span>100%</span><span>200%</span></div>
+            </div>
+            
+            <div>
+              <div class="flex items-center justify-between text-xs">
+                <span class="flex items-center gap-2"><span>🔊</span> Master</span>
+                <span id="masterGainLabel" class="mono text-zinc-400">100%</span>
+              </div>
+              <input id="masterGainSlider" type="range" min="0" max="150" value="100" class="w-full mt-2">
+              <div class="flex justify-between text-[10px] mono text-zinc-500"><span>0%</span><span>100%</span><span>150%</span></div>
+            </div>
+          </div>
+          
+          <div class="mt-4 p-3 rounded-xl bg-zinc-900 border border-zinc-700">
+            <div class="text-[11px] mono uppercase text-zinc-400">Live Preview (Web Audio mixing)</div>
+            <audio id="mixedPreviewAudio" controls class="w-full mt-2 h-8"></audio>
+            <div class="mt-2 text-[10px] mono text-zinc-500">Adjust sliders → preview updates in real-time via Web Audio API. Then download final at your levels.</div>
+          </div>
+          
+          <div class="mt-4 flex flex-wrap gap-2">
+            <button id="renderCustomMixBtn" class="text-xs px-4 py-2 rounded-full bg-purple-600 hover:bg-purple-500 font-semibold">Render custom mix at my levels</button>
+            <span id="customMixStatus" class="text-[11px] mono text-zinc-400 self-center"></span>
+          </div>
+          
+          <div id="customMixResult" class="hidden mt-3 p-3 rounded-xl bg-emerald-900/30 border border-emerald-700">
+            <div class="text-[11px] mono uppercase text-emerald-300">Your custom mix ready</div>
+            <audio id="customMixAudio" controls class="w-full mt-2 h-8"></audio>
+            <div class="mt-2 flex gap-2">
+              <a id="dlCustomMp3" class="text-xs px-3 py-1.5 rounded-full bg-white text-zinc-900 font-semibold hover:bg-zinc-100" download>Download MP3 (custom levels)</a>
+              <a id="dlCustomWav" class="text-xs px-3 py-1.5 rounded-full bg-zinc-700 text-white hover:bg-zinc-600" download>Download WAV (custom)</a>
+            </div>
+          </div>
+        </div>
+
         <div class="mt-5 rounded-2xl bg-zinc-800 p-4">
-          <div class="text-[11px] mono uppercase text-zinc-400">Final mix (vocal 100% preserved)</div>
+          <div class="text-[11px] mono uppercase text-zinc-400">Final mix (original levels, vocal 100% preserved)</div>
           <audio id="finalAudio" controls class="w-full mt-2"></audio>
           <div class="mt-3 flex flex-wrap gap-2">
-            <a id="dlMp3" class="text-xs px-4 py-2 rounded-full bg-white text-zinc-900 font-semibold hover:bg-zinc-100" download>Download MP3</a>
-            <a id="dlWav" class="text-xs px-4 py-2 rounded-full bg-zinc-700 text-white hover:bg-zinc-600" download>Download WAV</a>
+            <a id="dlMp3" class="text-xs px-4 py-2 rounded-full bg-white text-zinc-900 font-semibold hover:bg-zinc-100" download>Download MP3 (original)</a>
+            <a id="dlWav" class="text-xs px-4 py-2 rounded-full bg-zinc-700 text-white hover:bg-zinc-600" download>Download WAV (original)</a>
           </div>
         </div>
         <div class="mt-4 grid grid-cols-2 gap-3">
-          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Vocal stem (Demucs)</div><audio id="vocalAudio" controls class="w-full mt-2 h-8"></audio></div>
-          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Accompaniment (perfect-align)</div><audio id="accAudio" controls class="w-full mt-2 h-8"></audio></div>
+          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Vocal stem (Demucs)</div><audio id="vocalAudio" controls class="w-full mt-2 h-8"></audio><a id="dlVocal" class="text-[10px] mono mt-1 inline-block px-2 py-1 rounded-full bg-zinc-700 hover:bg-zinc-600" download>Vocal WAV</a></div>
+          <div class="rounded-2xl bg-zinc-800 p-3"><div class="text-[11px] mono uppercase text-zinc-400">Accompaniment (real piano)</div><audio id="accAudio" controls class="w-full mt-2 h-8"></audio><a id="dlAcc" class="text-[10px] mono mt-1 inline-block px-2 py-1 rounded-full bg-zinc-700 hover:bg-zinc-600" download>Track WAV</a></div>
         </div>
         <div id="lyricsBox" class="mt-5 hidden rounded-2xl bg-zinc-800 p-4">
           <div class="text-[11px] mono uppercase text-zinc-400">Lyrics (auto-detected)</div>
@@ -168,13 +225,12 @@
       </div>
 
       <div class="rounded-[24px] bg-white border border-purple-100 p-6">
-        <div class="font-semibold">How v1.4 perfect-align works</div>
+        <div class="font-semibold">How v1.6 works</div>
         <div class="mt-3 space-y-3 text-sm text-zinc-600 leading-relaxed">
-          <p><b>1. You sing.</b> Any language, off-key is okay — we track pitch every 50ms.</p>
-          <p><b>2. We analyze.</b> BPM, key, phrases + continuous F0 curve, 12-dim chroma, energy.</p>
-          <p><b>3. We compose v1.4:</b> Vocal note = top note of chord, bass follows your pitch curve at -19 semitones with glide, drums kick on your onsets (80ms window), sidechain duck when you sing loud, vocal glue octave doubling.</p>
-          <p><b>4. Mix & master.</b> Demucs vocal isolation (like vocal.ai), -14 LUFS, MP3 320k.</p>
-          <p class="text-[11px] mono bg-purple-50 p-2 rounded">For Mureka-level real instruments: set GENERATOR=musicgen-small in .env (needs torch+transformers, $0 self-hosted, 300M model ~1GB)</p>
+          <p><b>1. You sing.</b> Any language, off-key okay — 50ms pitch tracking.</p>
+          <p><b>2. Real piano:</b> 8 harmonics + inharmonicity + hammer noise, arpeggios not block chords, walking bass.</p>
+          <p><b>3. Volume mixer:</b> Web Audio API real-time mixing — adjust vocal/track/master live, then render custom mix at your levels and download.</p>
+          <p class="text-[11px] mono bg-purple-50 p-2 rounded">Pro tip: Set GENERATOR=musicgen-small in .env for real instruments (torch+transformers, $0, 300M ~1GB) — Mureka-level</p>
         </div>
       </div>
 
@@ -189,9 +245,9 @@
   </main>
 
   <footer class="max-w-6xl mx-auto px-6 py-10 text-[11px] mono text-zinc-400">
-    SingSmith v1.4 PERFECT-ALIGN • Fixed upload • <a href="/api/health" class="underline">API</a> • <a href="/test-upload" class="underline">Fallback upload</a> • Generator: procedural v1.4 + Demucs + MusicGen-small option
+    SingSmith v1.6 REAL PIANO + VOLUME MIXER • <a href="/api/health" class="underline">API</a> • <a href="/test-upload" class="underline">Fallback upload</a> • Mixer: vocal/track/master real-time
   </footer>
 
-<script src="/web/app.js?v=4"></script>
+<script src="/web/app.js?v=6"></script>
 </body>
 </html>
