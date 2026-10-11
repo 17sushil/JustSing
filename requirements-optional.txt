@@ -1,26 +1,37 @@
-# Optional: enables lyrics transcription + language detection (any language).
-# If this fails to install or you set WHISPER=off, the app works fine without it.
-faster-whisper
+# JustSing Optional Dependencies — Install only what you need
+# All core features work with ZERO optional deps (procedural + chorus-aligned)
+# If install fails, app still works — these are enhancements
 
-# Optional: vocal.ai level separation — Demucs (like vocal.ai / remove-vocal.ai)
-# pip install demucs
-# SEPARATOR=demucs in .env to extract vocal from mixed songs
-demucs
+# --- VOCAL SEPARATION (like vocal.ai) ---
+# Extracts clean vocal from mixed songs (with background music)
+# Needs torch. If pip fails, use: pip install demucs --no-deps + torch separately
+# .env: SEPARATOR=demucs
+# For Python 3.14: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#                  pip install demucs
+# demucs
 
-# Optional: Mureka-level quality — MusicGen Melody (melody-guided, follows your voice)
-# Zero-cost, self-hosted, no API key, but needs torch + 1-4GB download
-# For Python 3.14 (your version): use transformers (works, no spacy/blis)
+# --- LYRICS TRANSCRIPTION (any language) ---
+# Detects language + lyrics preview
+# Lightweight, usually works everywhere
+# .env: WHISPER=auto
+# faster-whisper
+
+# --- REAL INSTRUMENTS (Mureka-level, $0 self-hosted) ---
+# These need torch (~2GB) + model download (~1-4GB)
+# For Python 3.14 (recommended, works): 
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-#   pip install transformers scipy
-#   GENERATOR=musicgen-small  (real instruments, text-only, works on 3.14)
-# For Python 3.11 with melody following (best, like Mureka Remix):
+#   pip install transformers scipy sentencepiece
+#   .env: GENERATOR=musicgen-small  (real instruments, 300M ~1GB, BEST for poor piano fix)
+#
+# For Python 3.11 with melody following (follows YOUR exact melody):
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 #   pip install audiocraft
-#   GENERATOR=musicgen-melody  (follows YOUR melody via chroma)
-torch
-torchaudio
-transformers
-scipy
-audiocraft
-sentencepiece
+#   .env: GENERATOR=musicgen-melody
+#
+# DO NOT install torch+transformers+audiocraft together in one pip command on 3.14 — audiocraft fails on 3.14
+# Install step by step as above
 
+# --- Minimal safe install (no torch, no heavy deps) ---
+# If you want zero errors, install nothing — procedural + chorus-aligned work without any optional deps
+# Or only:
+# pip install faster-whisper  # for lyrics

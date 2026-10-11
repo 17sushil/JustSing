@@ -168,12 +168,13 @@ def synth_choir_voice(f0_curve, sr, duration, semitone_shift, velocity_curve, pa
     # Normalize vel to 0-1
     vel_max = np.max(vel_smooth) + 1e-6
     vel_norm = vel_smooth / vel_max
-    # Gate: only sing when energy > 0.02
-    gate = (vel_norm > 0.03).astype(float)
-    # Smooth gate
-    gate = np.convolve(gate, np.ones(int(sr*0.02))/int(sr*0.02), mode='same')
+    # Gate: only sing when energy > 0.008 (was 0.03, too strict for quiet vocals)
+    gate = (vel_norm > 0.008).astype(float)
+    # Smooth gate 20ms
+    gate_len = max(1, int(sr*0.02))
+    gate = np.convolve(gate, np.ones(gate_len)/gate_len, mode='same')
     
-    wave = wave * vel_norm * gate * 0.6
+    wave = wave * vel_norm * gate * 0.85  # increased from 0.6
     
     # Pan to stereo
     left_gain = 0.5 - pan*0.4
@@ -404,10 +405,10 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     third_shift = -4 if is_major else -3
     
     chorus_voices = [
-        {"shift": -12, "vol": 0.18, "pan": -0.15, "name": "octave_down"},
-        {"shift": -7, "vol": 0.14, "pan": 0.15, "name": "fifth"},
-        {"shift": third_shift, "vol": 0.12, "pan": -0.08, "name": "third"},
-        {"shift": 12, "vol": 0.08, "pan": 0.08, "name": "octave_up"},
+        {"shift": -12, "vol": 0.45, "pan": -0.20, "name": "octave_down"},  # increased from 0.18
+        {"shift": -7, "vol": 0.35, "pan": 0.20, "name": "fifth"},  # increased from 0.14
+        {"shift": third_shift, "vol": 0.32, "pan": -0.10, "name": "third"},  # increased from 0.12
+        {"shift": 12, "vol": 0.22, "pan": 0.10, "name": "octave_up"},  # increased from 0.08
     ]
     
     print(f"[chorus] Generating {len(chorus_voices)} harmony voices from YOUR F0: shifts {[v['shift'] for v in chorus_voices]}")
@@ -473,7 +474,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
         pad_notes = [pad_root, pad_root+7]  # root + fifth
         
         for pad_midi in pad_notes:
-            vel = 0.18 + bar_energy*0.15
+            vel = 0.35 + bar_energy*0.25  # increased from 0.18+0.15
             if is_intro:
                 vel *= 0.5
             if is_silence_bar:
@@ -482,10 +483,10 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
             s = bar_start
             e = min(s+len(pad_wave), n_total)
             if s < n_total:
-                # Sidechain duck when vocal loud
-                duck = 1.0 - min(bar_energy*2.0, 0.4)
-                mix_left[s:e] += pad_wave[:e-s] * 0.5 * duck
-                mix_right[s:e] += pad_wave[:e-s] * 0.5 * duck
+                # Sidechain duck when vocal loud, but less aggressive (0.3 not 0.4)
+                duck = 1.0 - min(bar_energy*1.5, 0.3)
+                mix_left[s:e] += pad_wave[:e-s] * 0.8 * duck  # increased from 0.5
+                mix_right[s:e] += pad_wave[:e-s] * 0.8 * duck
 
     # --- DRUMS (keep good drums from v1.5) ---
     variation = (seed % 10) / 10.0
@@ -536,9 +537,9 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
                 s = max(0, s+humanize)
                 e = min(s+len(kick), n_total)
                 if s < n_total:
-                    vel = 0.75 + bar_energy*0.15 + random.random()*0.06
+                    vel = 0.55 + bar_energy*0.10 + random.random()*0.04  # reduced from 0.75+0.15
                     if is_onset_beat or is_energy_peak:
-                        vel += 0.20
+                        vel += 0.15
                     if is_intro:
                         vel *= 0.65
                     mix_left[s:e] += kick[:e-s] * vel
@@ -552,7 +553,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
                 s = max(0, s+humanize)
                 e = min(s+len(snare), n_total)
                 if s < n_total:
-                    vel = 0.56 + bar_energy*0.15 + random.random()*0.10
+                    vel = 0.42 + bar_energy*0.10 + random.random()*0.06  # reduced from 0.56+0.15
                     if is_intro:
                         vel *= 0.55
                     if is_silence_bar:
@@ -568,13 +569,13 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
                 hat = hat_open if is_open else hat_closed
                 he = min(hs+len(hat), n_total)
                 if hs < n_total and random.random()>0.10:
-                    hat_vel = 0.48 + bar_energy*0.07 + random.random()*0.10
+                    hat_vel = 0.32 + bar_energy*0.05 + random.random()*0.06  # reduced from 0.48+0.07
                     if is_silence_bar:
                         hat_vel *= 0.32
                     if is_intro:
                         hat_vel *= 0.52
                     if is_energy_peak:
-                        hat_vel += 0.15
+                        hat_vel += 0.10
                     mix_left[hs:he] += hat[:he-hs] * hat_vel
                     mix_right[hs:he] += hat[:he-hs] * hat_vel
 
