@@ -96,6 +96,7 @@ def one_pole_lowpass(x, cutoff, sr):
 def synth_choir_voice(f0_curve, sr, duration, semitone_shift, velocity_curve, pan=0.0, variation=0, base_vol=0.5):
     """
     Choir voice following F0 curve with semitone shift, perfectly aligned.
+    v1.7.3 FLUTE: pure sine, breath noise, gentle vibrato, no saw harshness
     f0_curve: per-sample or per-50ms F0, will be interpolated to sr
     semitone_shift: e.g. -12, -7, -4, +12
     velocity_curve: energy-based volume (already includes base_vol*energy)
@@ -130,32 +131,56 @@ def synth_choir_voice(f0_curve, sr, duration, semitone_shift, velocity_curve, pa
     else:
         vel_interp = velocity_curve
     
-    # Synthesis: sine + soft saw for warmth, choir-like
-    phase = 2*np.pi*np.cumsum(f0_shifted)/sr
-    # Fundamental sine
-    sine = np.sin(phase)
-    # Soft saw for body (2nd harmonic)
-    saw_phase = 2 * ( (np.cumsum(f0_shifted)/sr) % 1 ) - 1
-    saw = saw_phase * 0.25
-    # 3rd harmonic faint
-    third = np.sin(2*phase) * 0.12
+    # Check timbre env var: flute (default, pure) vs choir (old, saw)
+    import os
+    timbre = os.getenv("CHORUS_TIMBRE", "flute").lower()
     
-    wave = sine * 0.7 + saw * 0.3 + third * 0.15
+    # Gentle vibrato: 5.5Hz, ±12 cents for flute-like natural
+    vibrato_rate = 5.5
+    vibrato_depth = 0.007  # 0.7% ~ 12 cents
+    vibrato = 1.0 + vibrato_depth * np.sin(2*np.pi*vibrato_rate*t + variation*0.1)
+    f0_vib = f0_shifted * vibrato
     
-    # Detune for choir width: slight random detune per voice
-    detune_cents = (random.random()-0.5)*6  # ±3 cents
-    # Already have detune via f0_shifted variation
+    phase = 2*np.pi*np.cumsum(f0_vib)/sr
     
-    # Lowpass based on shift: lower voices darker, higher brighter
-    if semitone_shift <= -7:
-        cutoff = 1800 + vel_interp.mean()*500
-    elif semitone_shift <= -3:
-        cutoff = 2200 + vel_interp.mean()*600
+    if timbre == "flute":
+        # FLUTE: almost pure sine, very soft harmonics, breath noise, no saw harshness
+        # Fundamental sine (90% of sound)
+        sine = np.sin(phase) * 0.9
+        # 2nd harmonic very weak 0.08
+        second = np.sin(2*phase) * 0.08
+        # 3rd harmonic even weaker 0.03
+        third = np.sin(3*phase) * 0.03
+        wave = sine + second + third
+        
+        # Breath noise: filtered white noise, very soft, high-pass, only when singing
+        breath = np.random.randn(n) * 0.015
+        # High-pass breath (remove low)
+        breath = breath - np.convolve(breath, np.ones(int(sr*0.002))/int(sr*0.002), mode='same')
+        breath_env = np.exp(-np.linspace(0, 1, n)*0.5)  # slight fade
+        wave = wave + breath * 0.12
+        
+        # Lowpass for flute warmth: 2800Hz for low voices, 3500Hz for high
+        if semitone_shift <= -7:
+            cutoff = 2600
+        else:
+            cutoff = 3400
+        wave = one_pole_lowpass(wave, cutoff, sr)
+        
     else:
-        cutoff = 3000 + vel_interp.mean()*800
-    
-    avg_cutoff = float(np.mean(cutoff)) if isinstance(cutoff, np.ndarray) else cutoff
-    wave = one_pole_lowpass(wave, avg_cutoff, sr)
+        # CHOIR: old version with saw for warmth (noisier)
+        sine = np.sin(phase)
+        saw_phase = 2 * ( (np.cumsum(f0_shifted)/sr) % 1 ) - 1
+        saw = saw_phase * 0.25
+        third = np.sin(2*phase) * 0.12
+        wave = sine * 0.7 + saw * 0.3 + third * 0.15
+        if semitone_shift <= -7:
+            cutoff = 1800
+        elif semitone_shift <= -3:
+            cutoff = 2200
+        else:
+            cutoff = 3000
+        wave = one_pole_lowpass(wave, cutoff, sr)
     
     # Envelope based on vocal energy: only sing when vocal sings
     # vel_interp is 0-1 energy, use it as amplitude
