@@ -458,8 +458,13 @@ def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acou
         gen = "musicgen-large"
     if gen in ("musicgen-stereo-melody", "stereo-melody"):
         gen = "musicgen-stereo-melody"
+    if gen in ("chorus-aligned", "chorus", "choir", "harmony", "v1.7", "chorus_v1.7"):
+        gen = "chorus-aligned"
 
     try:
+        if gen == "chorus-aligned":
+            from .generator_chorus_aligned import generate_accompaniment as gen_chorus
+            return gen_chorus(analysis, out_path, style, duration_sec=analysis.get("duration_sec"), vocal_path=vocal_path)
         if gen == "elevenlabs":
             return generate_with_elevenlabs(analysis, out_path, style)
         elif gen == "lyria":
