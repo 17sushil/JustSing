@@ -1,5 +1,5 @@
 """
-SingSmith Generator v1.7 CHORUS-ALIGNED — Your idea implemented
+SingSmith Generator v1.7.2 LOUDER CHORUS — Your idea implemented
 
 User idea: "I sing a song and JustSing will extract my voice and make a chorus that aligns with the voice and it will sound more align with the voice and soft music in same melody"
 
@@ -93,13 +93,14 @@ def one_pole_lowpass(x, cutoff, sr):
         y[i] = y[i-1] + alpha * (x[i] - y[i-1])
     return y
 
-def synth_choir_voice(f0_curve, sr, duration, semitone_shift, velocity_curve, pan=0.0, variation=0):
+def synth_choir_voice(f0_curve, sr, duration, semitone_shift, velocity_curve, pan=0.0, variation=0, base_vol=0.5):
     """
     Choir voice following F0 curve with semitone shift, perfectly aligned.
     f0_curve: per-sample or per-50ms F0, will be interpolated to sr
     semitone_shift: e.g. -12, -7, -4, +12
-    velocity_curve: energy-based volume
+    velocity_curve: energy-based volume (already includes base_vol*energy)
     pan: -1 to 1
+    base_vol: for final gain to keep vol differences
     """
     n = int(sr*duration)
     if n<=0:
@@ -165,7 +166,7 @@ def synth_choir_voice(f0_curve, sr, duration, semitone_shift, velocity_curve, pa
     else:
         vel_smooth = vel_interp
     
-    # Normalize vel to 0-1
+    # Normalize vel to 0-1 for gate
     vel_max = np.max(vel_smooth) + 1e-6
     vel_norm = vel_smooth / vel_max
     # Gate: only sing when energy > 0.008 (was 0.03, too strict for quiet vocals)
@@ -174,7 +175,8 @@ def synth_choir_voice(f0_curve, sr, duration, semitone_shift, velocity_curve, pa
     gate_len = max(1, int(sr*0.02))
     gate = np.convolve(gate, np.ones(gate_len)/gate_len, mode='same')
     
-    wave = wave * vel_norm * gate * 0.85  # increased from 0.6
+    # v1.7.2 louder: use vel_norm * base_vol for amplitude so boost works and voices keep relative vol
+    wave = wave * vel_norm * gate * base_vol * 1.2  # base_vol keeps vol differences, 1.2 extra loud
     
     # Pan to stereo
     left_gain = 0.5 - pan*0.4
@@ -342,7 +344,7 @@ def analyze_vocal_continuous(vocal_path: Path, duration_sec):
 
 def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic", duration_sec=None, vocal_path: Path = None):
     """
-    v1.7 CHORUS-ALIGNED: chorus derived from YOUR F0 = 100% aligned
+    v1.7.2 LOUDER CHORUS: chorus derived from YOUR F0 = 100% aligned
     """
     sr = 44100
     bpm = float(analysis.get("bpm", 90.0) or 90.0)
@@ -363,7 +365,7 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     
     np.random.seed(seed)
     random.seed(seed)
-    print(f"[generator] v1.7 CHORUS-ALIGNED STUDIO {style} {key_str} {bpm} BPM seed {seed} hash {file_hash} beats {len(beat_times)} bars {len(bar_times)} phrases {len(phrases)}")
+    print(f"[generator] v1.7.2 LOUDER CHORUS STUDIO {style} {key_str} {bpm} BPM seed {seed} hash {file_hash} beats {len(beat_times)} bars {len(bar_times)} phrases {len(phrases)}")
 
     total_duration = float(duration_sec or analysis.get("duration_sec", 30.0)) + 1.2
     if not bar_times:
@@ -403,26 +405,34 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
     # --- CHORUS: 4 voices derived from YOUR F0, 100% aligned ---
     # Determine third interval based on key: major = -4 semitones (major third down), minor = -3 semitones (minor third down)
     third_shift = -4 if is_major else -3
+
+    # v1.7.2 LOUDER CHORUS - user wants louder, perfectly aligning
+    import os
+    try:
+        chorus_boost = float(os.getenv("CHORUS_BOOST", "1.6"))
+        chorus_boost = max(0.5, min(3.0, chorus_boost))
+    except:
+        chorus_boost = 1.6
     
     chorus_voices = [
-        {"shift": -12, "vol": 0.45, "pan": -0.20, "name": "octave_down"},  # increased from 0.18
-        {"shift": -7, "vol": 0.35, "pan": 0.20, "name": "fifth"},  # increased from 0.14
-        {"shift": third_shift, "vol": 0.32, "pan": -0.10, "name": "third"},  # increased from 0.12
-        {"shift": 12, "vol": 0.22, "pan": 0.10, "name": "octave_up"},  # increased from 0.08
+        {"shift": -12, "vol": 0.75 * chorus_boost, "pan": -0.20, "name": "octave_down"},
+        {"shift": -7, "vol": 0.60 * chorus_boost, "pan": 0.20, "name": "fifth"},
+        {"shift": third_shift, "vol": 0.55 * chorus_boost, "pan": -0.10, "name": "third"},
+        {"shift": 12, "vol": 0.40 * chorus_boost, "pan": 0.10, "name": "octave_up"},
     ]
     
-    print(f"[chorus] Generating {len(chorus_voices)} harmony voices from YOUR F0: shifts {[v['shift'] for v in chorus_voices]}")
+    print(f"[chorus] v1.7.2 LOUDER CHORUS boost {chorus_boost:.1f}x — Generating {len(chorus_voices)} voices")
     
     for voice in chorus_voices:
         shift = voice["shift"]
         base_vol = voice["vol"]
         pan = voice["pan"]
         # Scale velocity by base vol
-        vel_curve = cont_energy * base_vol * 3.0  # energy * vol factor
-        left, right = synth_choir_voice(cont_f0, sr, total_duration, shift, vel_curve, pan=pan, variation=seed)
+        vel_curve = cont_energy * base_vol * 4.5  # energy * vol factor
+        left, right = synth_choir_voice(cont_f0, sr, total_duration, shift, vel_curve, pan=pan, variation=seed, base_vol=base_vol)
         mix_left += left
         mix_right += right
-        print(f"[chorus] Voice {voice['name']} shift {shift} semitones vol {base_vol} added, peak {np.max(np.abs(left)):.3f}")
+        print(f"[chorus] Voice {voice['name']} shift {shift} semitones vol {base_vol:.2f} added, peak {np.max(np.abs(left)):.3f}")
 
     # --- SOFT PAD: very soft, long attack, root+fifth only ---
     # Get diatonic chords for pad (simplified)
@@ -601,5 +611,5 @@ def generate_accompaniment(analysis: dict, out_path: Path, style="warm-acoustic"
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(out_path), stereo, sr)
-    print(f"[generator] v1.7 CHORUS-ALIGNED Saved {out_path}, {total_duration:.1f}s, {len(bar_times)} bars, {len(cont_times)} cont frames, seed {seed}, hash {file_hash}")
+    print(f"[generator] v1.7.2 LOUDER CHORUS Saved {out_path}, {total_duration:.1f}s, {len(bar_times)} bars, {len(cont_times)} cont frames, seed {seed}, hash {file_hash}")
     return out_path
