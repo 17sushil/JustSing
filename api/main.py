@@ -88,6 +88,111 @@ def get_job(job_id: str):
 def get_jobs(limit: int = 20):
     return {"jobs": list_jobs(limit)}
 
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    from .config import JOBS_DIR, UPLOADS_DIR, RENDERS_DIR
+    import shutil
+    jdir = JOBS_DIR / job_id
+    udir = UPLOADS_DIR / job_id
+    rdir = RENDERS_DIR / job_id
+    found = False
+    for d in [jdir, udir, rdir]:
+        if d.exists():
+            try:
+                shutil.rmtree(str(d))
+                found = True
+            except Exception as e:
+                print(f"[delete] failed to delete {d}: {e}")
+    if not found:
+        raise HTTPException(404, "Job not found")
+    return {"status": "deleted", "job_id": job_id}
+
+@app.post("/api/jobs/{job_id}/mix-custom")
+async def mix_custom(
+    job_id: str,
+    vocal_gain: float = Form(1.0),
+    acc_gain: float = Form(0.35),
+    master_gain: float = Form(1.0),
+):
+    from .config import RENDERS_DIR
+    import soundfile as sf
+    import numpy as np
+    rdir = RENDERS_DIR / job_id
+    if not rdir.exists():
+        raise HTTPException(404, "Job not found")
+    # Find vocal and acc wavs - prefer final stems
+    vocal_candidates = [rdir / "vocal_final.wav", rdir / "vocal.mp3", rdir / "final.wav"]
+    acc_candidates = [rdir / "accompaniment_final.wav", rdir / "accompaniment.mp3"]
+    vocal_path = None
+    acc_path = None
+    for p in vocal_candidates:
+        if p.exists():
+            vocal_path = p
+            break
+    for p in acc_candidates:
+        if p.exists():
+            acc_path = p
+            break
+    if not vocal_path or not acc_path:
+        # try job dir
+        from .config import JOBS_DIR
+        jdir = JOBS_DIR / job_id
+        for p in [jdir / "vocal.wav", jdir / "vocal_mono.wav", jdir / "vocal_stereo.wav"]:
+            if p.exists():
+                vocal_path = p
+                break
+    if not vocal_path or not acc_path:
+        raise HTTPException(404, "Stems not found for custom mix")
+
+    try:
+        # Load
+        def load_any(path):
+            data, sr = sf.read(str(path))
+            if data.ndim == 1:
+                data = np.stack([data, data], axis=1)
+            return data.astype(np.float32), sr
+        vocal, sr_v = load_any(vocal_path)
+        acc, sr_a = load_any(acc_path)
+        sr = sr_v
+        # Align lengths
+        final_len = max(len(vocal), len(acc))
+        if len(vocal) < final_len:
+            pad = np.zeros((final_len - len(vocal), 2), dtype=np.float32)
+            vocal = np.concatenate([vocal, pad], axis=0)
+        if len(acc) < final_len:
+            pad = np.zeros((final_len - len(acc), 2), dtype=np.float32)
+            acc = np.concatenate([acc, pad], axis=0)
+        # Apply gains
+        vocal = vocal * float(vocal_gain)
+        acc = acc * float(acc_gain)
+        mix = (vocal + acc) * float(master_gain)
+        # Prevent clipping
+        peak = np.max(np.abs(mix))
+        if peak > 0.98:
+            mix = mix * (0.98 / peak)
+        out_wav = rdir / f"custom_mix_{int(vocal_gain*100)}_{int(acc_gain*100)}_{int(master_gain*100)}.wav"
+        sf.write(str(out_wav), mix, sr)
+        # Encode mp3
+        from .pipeline.extract import encode_mp3
+        out_mp3 = out_wav.with_suffix(".mp3")
+        try:
+            encode_mp3(out_wav, out_mp3)
+        except:
+            out_mp3 = out_wav
+        return {
+            "status": "ok",
+            "job_id": job_id,
+            "gains": {"vocal": vocal_gain, "acc": acc_gain, "master": master_gain},
+            "files": {
+                "wav": f"/api/jobs/{job_id}/files/{out_wav.name}",
+                "mp3": f"/api/jobs/{job_id}/files/{out_mp3.name}" if out_mp3.exists() else f"/api/jobs/{job_id}/files/{out_wav.name}",
+            }
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Custom mix failed: {e}")
+
 @app.get("/api/jobs/{job_id}/files/{filename}")
 def get_file(job_id: str, filename: str):
     rdir = render_dir(job_id)

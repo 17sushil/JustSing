@@ -1,4 +1,4 @@
-/* Just Sing v41 MINIMALIST - no style picker, no empty space, v1.7 chorus, upload fixed */
+/* Just Sing v42 - fix browse, fix delete with icon modal, v1.7 chorus */
 const DEFAULT_STYLE = 'warm-acoustic';
 let selectedFile = null;
 let currentJobId = null;
@@ -7,6 +7,8 @@ let recChunks = [], mediaRecorder = null, recStartTime = null, recTimerInterval 
 let audioCtx = null, vocalBuffer = null, accBuffer = null, vocalGainNode = null, accGainNode = null, masterGainNode = null, isMixerReady = false;
 let recMode = 'audio', videoStream = null, videoRecorder = null, videoChunks = [], videoStartTime = null, videoTimerInterval = null, facingMode = 'user';
 let isPlaying = false;
+let pendingDeleteJobId = null, pendingDeleteMode = 'single'; // single, current, clearAll
+
 const el = (id) => document.getElementById(id);
 const log = (m) => { console.log(m); const d=el('debugLog'); if(d){ d.textContent='['+new Date().toLocaleTimeString()+'] '+m+'\n'+d.textContent.slice(0,3000);} };
 const showError = (msg) => { const b=el('errorBox'); if(!b)return; b.textContent=msg; b.classList.remove('hidden'); log('ERR '+msg); };
@@ -97,7 +99,7 @@ function renderWaveforms(){
 }
 
 async function initVolumeMixer(vocalUrl, accUrl){
- log('Init mixer v41 minimalist');
+ log('Init mixer v42');
  const status=el('customMixStatus'); if(status)status.textContent='Loading...';
  try{
   if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
@@ -205,17 +207,64 @@ function showResult(job){
 }
 function formatTime(sec){ if(!sec||isNaN(sec))return '00:00'; const m=Math.floor(sec/60), s=Math.floor(sec%60); return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
 
-async function deleteJob(jobId){
- if(!jobId)return; if(!confirm(`Delete ${jobId.slice(0,8)}?`))return;
- try{ const res=await fetch(`/api/jobs/${jobId}`,{method:'DELETE'}); if(!res.ok)throw new Error(await res.text()); if(currentJobId===jobId){ currentJobId=null; el('resultView')?.classList.add('hidden'); el('createView')?.classList.remove('hidden'); } await loadJobs(); }catch(e){ showError('Delete failed: '+e.message); }
+// --- Delete Modal with Icon (no alert) ---
+function openDeleteModal(jobId, mode='single'){
+ pendingDeleteJobId = jobId;
+ pendingDeleteMode = mode;
+ const modal = el('deleteModal');
+ const title = el('deleteModalTitle');
+ const msg = el('deleteModalMsg');
+ const confirmBtn = el('deleteModalConfirm');
+ if(!modal) return;
+ if(mode==='clearAll'){
+  if(title) title.textContent='Clear all songs?';
+  if(msg) msg.textContent='This will permanently delete all your songs. This action cannot be undone.';
+  if(confirmBtn) confirmBtn.innerHTML=`${icon('trash','w-4 h-4')} Clear all`;
+ } else {
+  const shortId = jobId ? jobId.slice(0,8) : '';
+  if(title) title.textContent='Delete song?';
+  if(msg) msg.textContent= shortId ? `Delete song ${shortId}? This will permanently remove it.` : 'This will permanently delete the song.';
+  if(confirmBtn) confirmBtn.innerHTML=`${icon('trash','w-4 h-4')} Delete`;
+ }
+ modal.classList.remove('hidden');
+ document.body.style.overflow='hidden';
+ log(`Open delete modal mode=${mode} job=${jobId||'all'}`);
 }
-async function clearAllJobs(){
+function closeDeleteModal(){
+ const modal = el('deleteModal');
+ if(modal) modal.classList.add('hidden');
+ document.body.style.overflow='';
+ pendingDeleteJobId = null;
+ pendingDeleteMode = 'single';
+}
+async function confirmDelete(){
+ const mode = pendingDeleteMode;
+ const jobId = pendingDeleteJobId;
+ closeDeleteModal();
+ if(mode==='clearAll'){
+  await clearAllJobsConfirmed();
+ } else if(jobId){
+  await deleteJobConfirmed(jobId);
+ }
+}
+async function deleteJobConfirmed(jobId){
+ if(!jobId) return;
+ log(`Deleting job ${jobId}`);
+ try{
+  const res = await fetch(`/api/jobs/${jobId}`,{method:'DELETE'});
+  if(!res.ok) throw new Error(await res.text());
+  if(currentJobId===jobId){ currentJobId=null; el('resultView')?.classList.add('hidden'); el('createView')?.classList.remove('hidden'); }
+  await loadJobs();
+  log(`Deleted ${jobId}`);
+ }catch(e){ showError('Delete failed: '+e.message); }
+}
+async function clearAllJobsConfirmed(){
  try{
   const res=await fetch('/api/jobs?limit=100'); const data=await res.json(); const jobs=data.jobs||[];
-  if(jobs.length===0){ alert('No songs'); return; }
-  if(!confirm(`Delete all ${jobs.length}?`))return;
+  if(jobs.length===0){ showError('No songs to clear'); return; }
   for(const j of jobs){ try{ await fetch(`/api/jobs/${j.job_id}`,{method:'DELETE'}); }catch{} }
   currentJobId=null; el('resultView')?.classList.add('hidden'); el('createView')?.classList.remove('hidden'); el('progressCard')?.classList.add('hidden'); await loadJobs();
+  log('Cleared all');
  }catch(e){ showError('Clear failed: '+e.message); }
 }
 
@@ -233,9 +282,17 @@ async function loadJobs(){
    div.className='group flex items-center justify-between p-3 rounded-[12px] bg-[#fdf8ef] border border-[#e8dcc6] hover:bg-white cursor-pointer transition text-[13px]';
    const dot=j.status==='completed'?'bg-emerald-500':j.status==='failed'?'bg-red-500':'bg-amber-500';
    const title=j.original_filename||j.job_id.slice(0,8);
-   div.innerHTML=`<div class="flex items-center gap-2 min-w-0 flex-1"><span class="w-2 h-2 rounded-full ${dot} shrink-0"></span><span class="font-medium truncate">${title.slice(0,24)}</span><span class="hidden sm:inline mono text-[11px] text-zinc-500">${j.analysis?.key||''} ${j.progress||0}%</span></div><button class="deleteBtn w-6 h-6 rounded-full bg-white border border-[#e8dcc6] flex items-center justify-center opacity-0 group-hover:opacity-100 transition" data-job="${j.job_id}">${icon('trash','w-3 h-3')}</button>`;
+   const safeTitle=title.replace(/</g,'&lt;').slice(0,24);
+   div.innerHTML=`<div class="flex items-center gap-2 min-w-0 flex-1"><span class="w-2 h-2 rounded-full ${dot} shrink-0"></span><span class="font-medium truncate">${safeTitle}</span><span class="hidden sm:inline mono text-[11px] text-zinc-500">${j.analysis?.key||''} ${j.progress||0}%</span></div><button type="button" class="deleteBtn w-7 h-7 rounded-full bg-white border border-[#e8dcc6] flex items-center justify-center hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition shrink-0" data-job="${j.job_id}" aria-label="Delete">${icon('trash','w-3.5 h-3.5')}</button>`;
    div.onclick=(e)=>{ if(e.target.closest('.deleteBtn'))return; currentJobId=j.job_id; el('progressCard')?.classList.remove('hidden'); if(j.status==='completed')showResult(j); else { el('createView')?.classList.remove('hidden'); el('resultView')?.classList.add('hidden'); pollJob(j.job_id); } window.scrollTo({top:0,behavior:'smooth'}); };
-   const delBtn=div.querySelector('.deleteBtn'); if(delBtn)delBtn.onclick=(e)=>{ e.stopPropagation(); deleteJob(j.job_id); };
+   const delBtn=div.querySelector('.deleteBtn');
+   if(delBtn){
+    delBtn.onclick=(e)=>{
+     e.preventDefault(); e.stopPropagation();
+     log(`Delete btn clicked ${j.job_id}`);
+     openDeleteModal(j.job_id,'single');
+    };
+   }
    list.appendChild(div);
   });
  }catch(e){ log('loadJobs failed: '+e.message); }
@@ -303,17 +360,32 @@ function setRecMode(mode){
 function setupUploadHandlers(){
  const drop=el('dropZone'), fileInput=el('fileInput'), browse=el('browseBtn');
  if(!drop||!fileInput){ log('Upload elements missing'); return; }
- const openPicker=(e)=>{
+
+ const triggerFilePicker = (e)=>{
   if(e){ e.preventDefault(); e.stopPropagation(); }
-  log('Opening file picker');
-  fileInput.click();
+  log('Trigger file picker');
+  // Reset to allow same file re-select
+  fileInput.value='';
+  // Use setTimeout to ensure reset processed, and call click in same tick as user gesture
+  try{
+   fileInput.click();
+  }catch(err){ log('fileInput.click failed: '+err.message); showError('Browse not supported, try drag & drop'); }
  };
- // Fix upload: ensure dropZone click opens picker, but not when clicking browseBtn (which also opens)
+
+ // Browse button - most reliable
+ if(browse){
+  browse.addEventListener('click', triggerFilePicker);
+  // also touch
+  browse.addEventListener('touchend', triggerFilePicker, {passive:false});
+ }
+
+ // Drop zone click - but ignore if clicking browseBtn (already handled) or fileInfo etc
  drop.addEventListener('click', (e)=>{
-  // If click is on browseBtn, let browseBtn handler handle it
   if(e.target.closest('#browseBtn')) return;
-  openPicker(e);
+  if(e.target.closest('#fileInfo')) return;
+  triggerFilePicker(e);
  });
+
  // Drag and drop
  ['dragenter','dragover'].forEach(ev=>{
   drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.add('border-[#e85d26]/50','bg-[#fff7ed]'); });
@@ -330,15 +402,20 @@ function setupUploadHandlers(){
    setFile(f,f.name);
   }
  });
- if(browse) browse.addEventListener('click', openPicker);
+
  fileInput.addEventListener('change', ()=>{
   const f=fileInput.files[0];
   if(f){
-   log(`Selected via input: ${f.name} ${f.size}`);
+   log(`Selected via input: ${f.name} ${f.size} type=${f.type}`);
    if(f.size>50*1024*1024){ showError('File too large, max 50MB'); fileInput.value=''; return; }
    setFile(f,f.name);
+  } else {
+   log('fileInput change but no file');
   }
  });
+
+ // Also support label click fallback: if user clicks anywhere in dropZone, fileInput will work
+
  el('clearFile').onclick=clearFile;
  el('generateBtn').onclick=uploadAndGenerate;
  el('recBtn').onclick=toggleRecord;
@@ -347,8 +424,17 @@ function setupUploadHandlers(){
  el('recModeAudioBtn').onclick=()=>setRecMode('audio');
  el('recModeVideoBtn').onclick=()=>setRecMode('video');
  el('refreshJobs').onclick=loadJobs;
- el('clearAllBtn').onclick=clearAllJobs;
- el('deleteCurrentBtn').onclick=()=>{ if(currentJobId)deleteJob(currentJobId); };
+
+ // Delete modal handlers
+ const dm=el('deleteModal'), dmo=el('deleteModalOverlay'), dmc=el('deleteModalCancel'), dmcf=el('deleteModalConfirm');
+ if(dmo) dmo.onclick=closeDeleteModal;
+ if(dmc) dmc.onclick=closeDeleteModal;
+ if(dmcf) dmcf.onclick=confirmDelete;
+ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ if(dm&&!dm.classList.contains('hidden')) closeDeleteModal(); } });
+
+ // Old delete buttons replaced by modal
+ el('clearAllBtn').onclick=()=>{ openDeleteModal(null,'clearAll'); };
+ el('deleteCurrentBtn').onclick=()=>{ if(currentJobId) openDeleteModal(currentJobId,'single'); else showError('No current song'); };
  el('newSongBtn').onclick=()=>{
   clearFile(); el('progressCard')?.classList.add('hidden'); el('resultView')?.classList.add('hidden'); el('createView')?.classList.remove('hidden'); hideError();
   if(audioCtx){ try{audioCtx.close();}catch{} audioCtx=null; } isMixerReady=false; window.scrollTo({top:0,behavior:'smooth'});
@@ -359,11 +445,11 @@ function setupUploadHandlers(){
   else navigator.clipboard.writeText(url).then(()=>alert('Link copied: '+url));
  };
  el('renderCustomMixBtn').onclick=renderCustomMixOnServer;
- log('Upload handlers setup - dropZone, fileInput, browseBtn all functional');
+ log('Upload handlers v42 - fileInput offscreen, browse fixed, delete modal icon');
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
- log('Just Sing v41 MINIMALIST v1.7 chorus - no style picker, no empty space, upload fixed, generate after recording');
+ log('Just Sing v42 FIXED browse + delete modal icon + v1.7 chorus');
  initLiveBars(); loadJobs(); setupUploadHandlers(); renderWaveforms();
  fetch('/api/jobs?limit=1').then(r=>r.json()).then(j=>{ log('Backend ready: '+(j.jobs?j.jobs.length:0)+' songs'); }).catch(e=>{ showError('Backend not reachable: '+e.message); });
 });
