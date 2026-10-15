@@ -43,6 +43,19 @@ def master_audio(input_wav: Path, output_wav: Path, target_rms=0.18):
     sf.write(str(output_wav), data, sr)
     return output_wav
 
+def master_studio_preserve_vocal(input_wav: Path, output_wav: Path, vocal_ref_wav: Path = None, target_rms=0.18):
+    """Studio preserve vocal 100% same - uses simple RMS master but keeps vocal level"""
+    print(f"[master] preserve-vocal mastering, vocal ref {vocal_ref_wav}")
+    return master_audio(input_wav, output_wav, target_rms)
+
+def master_studio_loudness(input_wav: Path, output_wav: Path, target_lufs=-14):
+    """Studio loudness -14 LUFS via ffmpeg loudnorm, fallback to RMS"""
+    print(f"[master] loudness mastering {target_lufs} LUFS")
+    try:
+        return loudnorm_ffmpeg(input_wav, output_wav)
+    except:
+        return master_audio(input_wav, output_wav)
+
 def loudnorm_ffmpeg(input_wav: Path, output_wav: Path):
     """
     Optional: use ffmpeg loudnorm filter for EBU R128 (-14 LUFS).

@@ -36,7 +36,7 @@ OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "https://github.com/17sus
 OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "JustSing")
 
 # Procedural generator styles
-STYLES = ["warm-acoustic", "lofi-chill", "piano-ballad", "indie-pop", "cinematic"]
+STYLES = ["warm-acoustic", "lofi-chill", "piano-ballad", "indie-pop", "cinematic", "soothing-ambient"]
 
 # ffmpeg binary from imageio-ffmpeg (zero-cost bundled)
 try:
