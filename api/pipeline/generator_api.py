@@ -292,7 +292,7 @@ def generate_with_stable_audio(analysis: dict, out_path: Path, style="warm-acous
     """
     raise NotImplementedError("Stable Audio Open self-host not wired — use procedural or openrouter")
 
-def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acoustic"):
+def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acoustic", vocal_path: Path = None):
     """
     Dispatch based on GENERATOR env var, with fallback to procedural.
     GENERATOR options:
@@ -321,8 +321,8 @@ def generate_accompaniment_auto(analysis: dict, out_path: Path, style="warm-acou
         elif gen == "musicgen":
             raise NotImplementedError("MusicGen self-host TODO")
         else:
-            return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"))
+            return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"), vocal_path=vocal_path)
     except Exception as e:
         print(f"[generator] {gen} failed ({e}), falling back to procedural")
         # If openrouter fails, try procedural
-        return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"))
+        return gen_proc(analysis, out_path, style, duration_sec=analysis.get("duration_sec"), vocal_path=vocal_path)
